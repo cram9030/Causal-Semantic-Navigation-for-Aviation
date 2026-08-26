@@ -70,6 +70,20 @@ the service's `tileInfo`, see `tiles.tile_bounds`) with the pixel data to
 build a source raster in EPSG:3857, then warps it to EPSG:4326 with
 `rasterio.warp.reproject`.
 
+## 404s at the finest zoom level are expected, not a bug
+
+ArcGIS cache generation only creates tiles that intersect actual source
+imagery, especially at the deepest LODs - `tileInfo.lods` can list a level
+(e.g. `DPW_ImageryCached2025`'s level 23, ~1.9cm/pixel) without every tile
+in that level's theoretical row/col grid having been generated across the
+whole service extent. Requesting one of those un-generated tiles returns a
+plain `404`, not an error condition. `fetch_historic_imagery.py` treats a
+404 from `/tile` as "not cached here" and skips it (logged at `DEBUG`,
+counted separately from real failures); if *every* tile in an AOI comes
+back 404 at the default (finest) level, that's a sign the service's
+deep-zoom coverage doesn't reach that area - rerun with a coarser
+`--level` to confirm.
+
 ## What couldn't be verified in this environment
 
 This sandbox's egress policy blocks direct network access to

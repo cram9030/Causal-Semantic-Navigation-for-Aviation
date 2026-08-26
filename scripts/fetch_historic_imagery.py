@@ -26,6 +26,8 @@ import logging
 import sys
 from pathlib import Path
 
+import requests
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from csnav.data.arcgis.catalog import ArcGISCatalog, DEFAULT_BASE_URL, extract_year  # noqa: E402
@@ -56,26 +58,55 @@ def fetch_service(
     tile_info = meta.tile_info
     target_level = level if level is not None else tile_info.max_level
     aoi_3857 = extent_4326_to_3857(aoi_4326)
+    resolution = tile_info.lod_for_level(target_level).resolution
+    logger.info(
+        "%s: fetching level %d (%.3f units/px) - not every tile in the AOI's grid is "
+        "necessarily cached at this resolution; missing individual tiles are expected "
+        "and skipped, not an error",
+        ref.full_name, target_level, resolution,
+    )
 
     dest = output_dir / ref.name
     dest.mkdir(parents=True, exist_ok=True)
 
-    count = 0
+    written = 0
+    missing = 0
+    failed = 0
     for row, col in tiles_covering_extent(tile_info, target_level, aoi_3857):
         bounds = tile_bounds(tile_info, target_level, row, col)
         try:
             image_bytes = client.fetch_tile_auto(target_level, row, col)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                # No cached tile at this level/row/col - normal at fine zoom
+                # levels where only part of the AOI has that much detail.
+                logger.debug("no cached tile for %s z%d/%d/%d", ref.name, target_level, row, col)
+                missing += 1
+            else:
+                logger.exception("failed to fetch %s tile z%d/%d/%d", ref.name, target_level, row, col)
+                failed += 1
+            continue
         except Exception:  # noqa: BLE001 - keep collecting the rest of the AOI
             logger.exception("failed to fetch %s tile z%d/%d/%d", ref.name, target_level, row, col)
+            failed += 1
             continue
 
         reprojected = reproject_tile_to_4326(image_bytes, bounds)
         out_path = dest / f"{target_level}_{row}_{col}.tif"
         reprojected.to_geotiff(out_path)
-        count += 1
+        written += 1
 
-    logger.info("%s: wrote %d tiles (year=%s)", ref.full_name, count, extract_year(ref.name))
-    return count
+    logger.info(
+        "%s: wrote %d tiles, %d not cached at this level, %d failed (year=%s)",
+        ref.full_name, written, missing, failed, extract_year(ref.name),
+    )
+    if written == 0 and missing > 0 and failed == 0:
+        logger.warning(
+            "%s: every requested tile was missing at level %d - try a coarser --level "
+            "(this service may only have deep-zoom coverage for part of the AOI)",
+            ref.full_name, target_level,
+        )
+    return written
 
 
 def main() -> None:
