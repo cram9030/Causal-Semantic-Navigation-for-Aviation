@@ -48,11 +48,14 @@ WMTS_CAPABILITIES_XML = f"""<?xml version="1.0" encoding="UTF-8"?>
   <Contents>
     <Layer>
       <ows:Identifier>DPW_ImageryCached</ows:Identifier>
+      <Style isDefault="true">
+        <ows:Identifier>default</ows:Identifier>
+      </Style>
       <TileMatrixSetLink>
         <TileMatrixSet>default028mm</TileMatrixSet>
       </TileMatrixSetLink>
       <ResourceURL format="image/png" resourceType="tile"
-        template="{SERVICE_URL}/WMTS/tile/1.0.0/DPW_ImageryCached/default/{{TileMatrixSet}}/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png"/>
+        template="{SERVICE_URL}/WMTS/tile/1.0.0/DPW_ImageryCached/{{Style}}/{{TileMatrixSet}}/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png"/>
     </Layer>
   </Contents>
 </Capabilities>
@@ -169,7 +172,10 @@ def test_parse_wmts_capabilities():
     info = parse_wmts_capabilities(WMTS_CAPABILITIES_XML)
     assert info.layer_identifier == "DPW_ImageryCached"
     assert info.tile_matrix_set == "default028mm"
-    assert info.resource_url_template.endswith("{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png")
+    assert info.style == "default"
+    assert info.resource_url_template.endswith(
+        "{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png"
+    )
 
 
 @responses.activate
@@ -177,9 +183,10 @@ def test_fetch_wmts_tile_builds_expected_url():
     layer_info = WMTSLayerInfo(
         layer_identifier="DPW_ImageryCached",
         tile_matrix_set="default028mm",
+        style="default",
         resource_url_template=(
-            f"{SERVICE_URL}/WMTS/tile/1.0.0/DPW_ImageryCached/default/"
-            "{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png"
+            f"{SERVICE_URL}/WMTS/tile/1.0.0/DPW_ImageryCached/"
+            "{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png"
         ),
     )
     expected_url = f"{SERVICE_URL}/WMTS/tile/1.0.0/DPW_ImageryCached/default/default028mm/2/5/7.png"
@@ -189,3 +196,17 @@ def test_fetch_wmts_tile_builds_expected_url():
     result = client.fetch_wmts_tile(layer_info, matrix="2", row=5, col=7)
 
     assert result == b"wmts-tile-bytes"
+
+
+@responses.activate
+def test_fetch_wmts_tile_raises_clear_error_for_unknown_placeholder():
+    layer_info = WMTSLayerInfo(
+        layer_identifier="DPW_ImageryCached",
+        tile_matrix_set="default028mm",
+        style="default",
+        resource_url_template=f"{SERVICE_URL}/WMTS/tile/1.0.0/{{Layer}}/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png",
+    )
+    client = ArcGISTileClient(SERVICE_URL)
+
+    with pytest.raises(ArcGISClientError):
+        client.fetch_wmts_tile(layer_info, matrix="2", row=5, col=7)

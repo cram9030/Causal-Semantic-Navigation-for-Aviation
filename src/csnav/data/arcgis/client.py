@@ -42,6 +42,19 @@ class WMTSLayerInfo:
     layer_identifier: str
     tile_matrix_set: str
     resource_url_template: str
+    style: str = "default"
+
+
+def _parse_default_style(layer: ET.Element) -> str:
+    style = None
+    for elem in layer.findall("wmts:Style", _WMTS_NAMESPACES):
+        identifier = elem.findtext("ows:Identifier", namespaces=_WMTS_NAMESPACES)
+        is_default = elem.attrib.get("isDefault") == "true"
+        if style is None or is_default:
+            style = identifier or style
+        if is_default:
+            break
+    return style or "default"
 
 
 def parse_wmts_capabilities(xml_bytes: bytes) -> WMTSLayerInfo:
@@ -58,6 +71,7 @@ def parse_wmts_capabilities(xml_bytes: bytes) -> WMTSLayerInfo:
     tile_matrix_set = (
         layer.findtext("wmts:TileMatrixSetLink/wmts:TileMatrixSet", namespaces=_WMTS_NAMESPACES) or ""
     )
+    style = _parse_default_style(layer)
 
     resource_url = layer.find("wmts:ResourceURL[@resourceType='tile']", _WMTS_NAMESPACES)
     if resource_url is None or "template" not in resource_url.attrib:
@@ -67,6 +81,7 @@ def parse_wmts_capabilities(xml_bytes: bytes) -> WMTSLayerInfo:
         layer_identifier=identifier,
         tile_matrix_set=tile_matrix_set,
         resource_url_template=resource_url.attrib["template"],
+        style=style,
     )
 
 
@@ -203,12 +218,20 @@ class ArcGISTileClient:
         return parse_wmts_capabilities(resp.content)
 
     def fetch_wmts_tile(self, layer_info: WMTSLayerInfo, matrix: str, row: int, col: int) -> bytes:
-        url = layer_info.resource_url_template.format(
-            TileMatrixSet=layer_info.tile_matrix_set,
-            TileMatrix=matrix,
-            TileRow=row,
-            TileCol=col,
-        )
+        fields = {
+            "Style": layer_info.style,
+            "TileMatrixSet": layer_info.tile_matrix_set,
+            "TileMatrix": matrix,
+            "TileRow": row,
+            "TileCol": col,
+        }
+        try:
+            url = layer_info.resource_url_template.format(**fields)
+        except KeyError as exc:
+            raise ArcGISClientError(
+                f"WMTS ResourceURL template {layer_info.resource_url_template!r} references "
+                f"placeholder {exc}, which is not one of {sorted(fields)}"
+            ) from exc
         resp = self.session.get(url, timeout=self.timeout)
         resp.raise_for_status()
         return resp.content
