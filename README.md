@@ -52,3 +52,7 @@ normal for some (or, at the deepest level, even all) tiles in an AOI to come
 back "not cached" rather than written. The script logs a per-service summary
 of tiles written vs. not cached vs. failed, and warns if a whole run came
 back empty so you know to retry with a coarser `--level`.
+
+Progress is shown live via a `tqdm` bar (services overall, plus a per-service
+tile bar with running written/missing/failed counts) - useful since a large
+AOI at a fine `--level` can mean fetching thousands of tiles.

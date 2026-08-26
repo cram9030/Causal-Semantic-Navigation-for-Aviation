@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import requests
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -69,10 +70,16 @@ def fetch_service(
     dest = output_dir / ref.name
     dest.mkdir(parents=True, exist_ok=True)
 
+    # Materialized (not left as a generator) so tqdm can show a total/ETA
+    # instead of just a bare counter - AOI tile counts are small enough
+    # (thousands, not millions) for this to be cheap.
+    tile_coords = list(tiles_covering_extent(tile_info, target_level, aoi_3857))
+
     written = 0
     missing = 0
     failed = 0
-    for row, col in tiles_covering_extent(tile_info, target_level, aoi_3857):
+    progress = tqdm(tile_coords, desc=ref.name, unit="tile", leave=False)
+    for row, col in progress:
         bounds = tile_bounds(tile_info, target_level, row, col)
         try:
             image_bytes = client.fetch_tile_auto(target_level, row, col)
@@ -85,16 +92,20 @@ def fetch_service(
             else:
                 logger.exception("failed to fetch %s tile z%d/%d/%d", ref.name, target_level, row, col)
                 failed += 1
+            progress.set_postfix(written=written, missing=missing, failed=failed)
             continue
         except Exception:  # noqa: BLE001 - keep collecting the rest of the AOI
             logger.exception("failed to fetch %s tile z%d/%d/%d", ref.name, target_level, row, col)
             failed += 1
+            progress.set_postfix(written=written, missing=missing, failed=failed)
             continue
 
         reprojected = reproject_tile_to_4326(image_bytes, bounds)
         out_path = dest / f"{target_level}_{row}_{col}.tif"
         reprojected.to_geotiff(out_path)
         written += 1
+        progress.set_postfix(written=written, missing=missing, failed=failed)
+    progress.close()
 
     logger.info(
         "%s: wrote %d tiles, %d not cached at this level, %d failed (year=%s)",
@@ -137,7 +148,7 @@ def main() -> None:
     aoi = Extent(xmin=args.bbox[0], ymin=args.bbox[1], xmax=args.bbox[2], ymax=args.bbox[3], wkid=4326)
 
     total = 0
-    for ref in services:
+    for ref in tqdm(services, desc="services", unit="service"):
         total += fetch_service(ref, catalog, aoi, args.output_dir, args.level)
 
     logger.info("done: %d tiles written across %d service(s)", total, len(services))
