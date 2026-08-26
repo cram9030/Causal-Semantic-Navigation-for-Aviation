@@ -28,8 +28,15 @@ def tile_bounds(tile_info: TileInfo, level: int, row: int, col: int) -> Extent:
     return Extent(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax, wkid=tile_info.wkid)
 
 
-def tiles_covering_extent(tile_info: TileInfo, level: int, extent: Extent) -> Iterator[tuple[int, int]]:
-    """Yield ``(row, col)`` pairs for every tile intersecting ``extent``.
+def tile_row_col_range(tile_info: TileInfo, level: int, extent: Extent) -> tuple[int, int, int, int]:
+    """Return ``(row_min, row_max, col_min, col_max)`` (inclusive) covering ``extent``.
+
+    This is the shared math behind :func:`tiles_covering_extent`,
+    :func:`tile_count_covering_extent`, and :func:`sample_tiles_covering_extent`
+    - computing just the bounding range is O(1), so callers that only need a
+    count or a sample don't have to enumerate (or hold in memory) every tile,
+    which matters at fine zoom levels where a single AOI can cover millions
+    of tiles.
 
     ``extent`` must already be in the tile scheme's spatial reference
     (``tile_info.wkid``) - reproject with :mod:`csnav.data.arcgis.projections`
@@ -38,7 +45,7 @@ def tiles_covering_extent(tile_info: TileInfo, level: int, extent: Extent) -> It
     if extent.wkid != tile_info.wkid:
         raise ValueError(
             f"extent wkid {extent.wkid} does not match tile scheme wkid {tile_info.wkid}; "
-            "reproject the extent before calling tiles_covering_extent"
+            "reproject the extent before calling tile_row_col_range"
         )
 
     lod = tile_info.lod_for_level(level)
@@ -50,9 +57,59 @@ def tiles_covering_extent(tile_info: TileInfo, level: int, extent: Extent) -> It
     row_min = math.floor((tile_info.origin_y - extent.ymax) / tile_height)
     row_max = math.floor((tile_info.origin_y - extent.ymin) / tile_height - 1e-9)
 
-    for row in range(max(row_min, 0), row_max + 1):
-        for col in range(max(col_min, 0), col_max + 1):
+    return max(row_min, 0), row_max, max(col_min, 0), col_max
+
+
+def tiles_covering_extent(tile_info: TileInfo, level: int, extent: Extent) -> Iterator[tuple[int, int]]:
+    """Yield ``(row, col)`` pairs for every tile intersecting ``extent``.
+
+    ``extent`` must already be in the tile scheme's spatial reference
+    (``tile_info.wkid``) - reproject with :mod:`csnav.data.arcgis.projections`
+    first if the area of interest was captured in EPSG:4326.
+    """
+    row_min, row_max, col_min, col_max = tile_row_col_range(tile_info, level, extent)
+    for row in range(row_min, row_max + 1):
+        for col in range(col_min, col_max + 1):
             yield row, col
+
+
+def tile_count_covering_extent(tile_info: TileInfo, level: int, extent: Extent) -> int:
+    """Number of tiles :func:`tiles_covering_extent` would yield, without enumerating them."""
+    row_min, row_max, col_min, col_max = tile_row_col_range(tile_info, level, extent)
+    return max(row_max - row_min + 1, 0) * max(col_max - col_min + 1, 0)
+
+
+def sample_tiles_covering_extent(
+    tile_info: TileInfo, level: int, extent: Extent, sample_size: int
+) -> list[tuple[int, int]]:
+    """Up to ``sample_size`` ``(row, col)`` pairs spread evenly across ``extent``.
+
+    Unlike ``list(tiles_covering_extent(...))``, this never materializes the
+    full tile grid - it walks a coarse stride over the row/col range - so
+    it's safe to call even when that grid would be far too large to hold in
+    memory (e.g. checking a fine level's coverage before committing to it).
+    """
+    row_min, row_max, col_min, col_max = tile_row_col_range(tile_info, level, extent)
+    row_count = row_max - row_min + 1
+    col_count = col_max - col_min + 1
+    if row_count <= 0 or col_count <= 0:
+        return []
+
+    total = row_count * col_count
+    if total <= sample_size:
+        return [(row, col) for row in range(row_min, row_max + 1) for col in range(col_min, col_max + 1)]
+
+    side = max(1, math.isqrt(sample_size))
+    row_step = max(1, row_count // side)
+    col_step = max(1, col_count // side)
+
+    coords: list[tuple[int, int]] = []
+    for row in range(row_min, row_max + 1, row_step):
+        for col in range(col_min, col_max + 1, col_step):
+            coords.append((row, col))
+            if len(coords) >= sample_size:
+                return coords
+    return coords
 
 
 def best_level_for_resolution(tile_info: TileInfo, target_resolution: float) -> int:
