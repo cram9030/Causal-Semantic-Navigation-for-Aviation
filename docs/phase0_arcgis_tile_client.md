@@ -40,14 +40,27 @@ to EPSG:4326, and write one GeoTIFF per tile under
 
 `ArcGISTileClient.best_transport()` prefers, in order:
 
-1. **WMTS** - if the service exposes `WMTS/1.0.0/WMTSCapabilities.xml`
-   (checked with a lightweight probe request).
-2. **`/tile/{level}/{row}/{col}`** - ArcGIS's native cached-tile resource,
+1. **`/tile/{level}/{row}/{col}`** - ArcGIS's native cached-tile resource,
    used whenever the service metadata includes a `tileInfo` block (i.e. it's
-   a cached/tiled MapServer).
+   a cached/tiled MapServer). This is preferred over WMTS because it
+   addresses tiles with the *exact* level/row/col grid computed from the
+   service's own `tileInfo` (see `tiles.tile_bounds`), so there's no risk of
+   the WMTS `TileMatrix` identifiers not lining up with that grid.
+2. **WMTS** - used when the service exposes `WMTS/1.0.0/WMTSCapabilities.xml`
+   (checked with a lightweight probe request) but has no native tile cache,
+   e.g. a dynamic MapServer with the WMTS capability enabled.
 3. **`/export`** - dynamic image export, used when the service isn't
-   pre-tiled, or as a fallback for an arbitrary (non tile-aligned) bounding
-   box via `fetch_export()` directly.
+   pre-tiled and doesn't expose WMTS, or as a fallback for an arbitrary
+   (non tile-aligned) bounding box via `fetch_export()` directly.
+
+Earlier revisions of this client preferred WMTS first. In practice,
+geo.sanjoseca.gov's WMTS `ResourceURL` template returned a 400 for tile
+requests built from the MapServer's own tileInfo level/row/col - the WMTS
+`TileMatrix` identifiers for a given `TileMatrixSet` aren't guaranteed to
+equal the cache's level numbers, and this client doesn't parse the
+`TileMatrixSet`'s own matrix definitions to translate between the two. The
+native `/tile` resource has no such ambiguity, so it's tried first whenever
+it's available.
 
 ## Reprojection
 

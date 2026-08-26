@@ -2,12 +2,16 @@
 
 Supports three transports, in order of preference:
 
-1. **WMTS** - standards-based, used when the service exposes a
-   ``WMTS/1.0.0/WMTSCapabilities.xml`` document.
-2. **``/tile/{z}/{y}/{x}``** - ArcGIS's native cached-tile resource, used when
-   the service is a tiled (cached) MapServer.
-3. **``/export``** - dynamic image export, the fallback for non-cached
-   services or arbitrary (non tile-aligned) bounding boxes.
+1. **``/tile/{z}/{y}/{x}``** - ArcGIS's native cached-tile resource, used
+   whenever the service is a tiled (cached) MapServer. This addresses tiles
+   with the exact same level/row/col grid as the service's own ``tileInfo``
+   (see :mod:`csnav.data.arcgis.tiles`), so it is unambiguous.
+2. **WMTS** - standards-based, used when the service exposes a
+   ``WMTS/1.0.0/WMTSCapabilities.xml`` document but has no native tile cache
+   (e.g. a dynamic MapServer with the WMTS capability enabled). Preferred
+   over ``/export`` because it still returns pre-cut, tile-aligned images.
+3. **``/export``** - dynamic image export, the fallback for non-cached,
+   non-WMTS services or arbitrary (non tile-aligned) bounding boxes.
 """
 
 from __future__ import annotations
@@ -169,10 +173,10 @@ class ArcGISTileClient:
 
     def best_transport(self) -> TileTransport:
         meta = self.get_metadata()
-        if meta.supports_wmts:
-            return TileTransport.WMTS
         if meta.supports_tiles:
             return TileTransport.TILE
+        if meta.supports_wmts:
+            return TileTransport.WMTS
         if meta.supports_export:
             return TileTransport.EXPORT
         raise ArcGISClientError(f"{self.service_url} exposes no supported tile transport")
@@ -245,8 +249,6 @@ class ArcGISTileClient:
             return self.fetch_tile(level, row, col)
         if transport is TileTransport.WMTS:
             layer_info = self.get_wmts_layer_info()
-            meta = self.get_metadata()
-            assert meta.tile_info is not None
             return self.fetch_wmts_tile(layer_info, matrix=str(level), row=row, col=col)
         # EXPORT: derive the tile's bounds from tileInfo and export that bbox.
         from .tiles import tile_bounds  # local import to avoid a cycle at module load

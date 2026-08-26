@@ -98,10 +98,14 @@ def test_get_metadata_parses_dynamic_service():
 
 
 @responses.activate
-def test_best_transport_prefers_wmts_when_available():
+def test_best_transport_prefers_tile_over_wmts():
+    # A cached MapServer's own /tile resource uses the exact z/row/col grid
+    # our tile math is built from, so it wins over WMTS even when both are
+    # available - avoids relying on the WMTS TileMatrix identifiers lining
+    # up with tileInfo's levels.
     _mock_metadata(TILED_METADATA, wmts_available=True)
     client = ArcGISTileClient(SERVICE_URL)
-    assert client.best_transport() is TileTransport.WMTS
+    assert client.best_transport() is TileTransport.TILE
 
 
 @responses.activate
@@ -109,6 +113,16 @@ def test_best_transport_falls_back_to_tile_without_wmts():
     _mock_metadata(TILED_METADATA, wmts_available=False)
     client = ArcGISTileClient(SERVICE_URL)
     assert client.best_transport() is TileTransport.TILE
+
+
+@responses.activate
+def test_best_transport_prefers_wmts_over_export_for_dynamic_service():
+    # A dynamic (non-cached) MapServer has no tileInfo, so /tile isn't an
+    # option, but WMTS can still be enabled on it - prefer that tile-aligned
+    # transport over a raw /export bbox request.
+    _mock_metadata(DYNAMIC_METADATA, wmts_available=True)
+    client = ArcGISTileClient(SERVICE_URL)
+    assert client.best_transport() is TileTransport.WMTS
 
 
 @responses.activate
@@ -156,6 +170,19 @@ def test_fetch_tile_auto_dispatches_to_tile_transport():
 
     client = ArcGISTileClient(SERVICE_URL)
     assert client.fetch_tile_auto(1, 0, 0) == b"tile-bytes"
+
+
+@responses.activate
+def test_fetch_tile_auto_dispatches_to_wmts_for_dynamic_service():
+    _mock_metadata(DYNAMIC_METADATA, wmts_available=True)
+    responses.add(responses.GET, WMTS_URL, body=WMTS_CAPABILITIES_XML, status=200)
+    expected_tile_url = (
+        f"{SERVICE_URL}/WMTS/tile/1.0.0/DPW_ImageryCached/default/default028mm/4/1/2.png"
+    )
+    responses.add(responses.GET, expected_tile_url, body=b"wmts-tile-bytes")
+
+    client = ArcGISTileClient(SERVICE_URL)
+    assert client.fetch_tile_auto(4, 1, 2) == b"wmts-tile-bytes"
 
 
 @responses.activate
