@@ -27,6 +27,3 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-filterwarnings = [
-    "ignore:Dataset has no geotransform, gcps, or rpcs.*:rasterio.errors.NotGeoreferencedWarning",
-]
