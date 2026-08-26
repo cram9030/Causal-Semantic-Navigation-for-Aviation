@@ -84,21 +84,6 @@ back 404 at the default (finest) level, that's a sign the service's
 deep-zoom coverage doesn't reach that area - rerun with a coarser
 `--level` to confirm.
 
-## What couldn't be verified in this environment
-
-This sandbox's egress policy blocks direct network access to
-`geo.sanjoseca.gov` (confirmed via the proxy status endpoint - a 403 policy
-denial, not a transient failure), so the exact set of historic service names
-and their `tileInfo`/capabilities could not be inspected live. The client
-and catalog are built against the documented ArcGIS Server REST API
-contract and are deliberately discovery-driven (no hardcoded service list)
-so they should work unmodified once run somewhere with access - but running
-`scripts/fetch_historic_imagery.py` against the real service the first time
-is the remaining validation step. All modules are covered by unit tests
-against mocked ArcGIS REST responses (`tests/data/arcgis/`) so the request
-building, tile-grid math, and reprojection logic are verified independent
-of live connectivity.
-
 ## Running the tests
 
 ```bash
