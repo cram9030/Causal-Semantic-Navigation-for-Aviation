@@ -12,6 +12,9 @@ Training data for this project needs the full historic archive, not just the
 newest imagery, so this script never limits itself to the most recent
 service - every match returned by the catalog is fetched.
 
+Re-running the same command resumes rather than re-downloading: a tile whose
+output GeoTIFF already exists is skipped unless ``--overwrite`` is passed.
+
 Example::
 
     python scripts/fetch_historic_imagery.py \\
@@ -47,6 +50,7 @@ def fetch_service(
     aoi_4326: Extent,
     output_dir: Path,
     level: int | None,
+    overwrite: bool = False,
 ) -> int:
     service_url = catalog.service_rest_url(ref)
     client = ArcGISTileClient(service_url)
@@ -76,10 +80,19 @@ def fetch_service(
     tile_coords = list(tiles_covering_extent(tile_info, target_level, aoi_3857))
 
     written = 0
+    skipped = 0
     missing = 0
     failed = 0
     progress = tqdm(tile_coords, desc=ref.name, unit="tile", leave=False)
     for row, col in progress:
+        out_path = dest / f"{target_level}_{row}_{col}.tif"
+        if out_path.exists() and not overwrite:
+            # Already downloaded by an earlier run - resume rather than
+            # re-fetching and re-warping it.
+            skipped += 1
+            progress.set_postfix(written=written, skipped=skipped, missing=missing, failed=failed)
+            continue
+
         bounds = tile_bounds(tile_info, target_level, row, col)
         try:
             image_bytes = client.fetch_tile_auto(target_level, row, col)
@@ -92,26 +105,30 @@ def fetch_service(
             else:
                 logger.exception("failed to fetch %s tile z%d/%d/%d", ref.name, target_level, row, col)
                 failed += 1
-            progress.set_postfix(written=written, missing=missing, failed=failed)
+            progress.set_postfix(written=written, skipped=skipped, missing=missing, failed=failed)
             continue
         except Exception:  # noqa: BLE001 - keep collecting the rest of the AOI
             logger.exception("failed to fetch %s tile z%d/%d/%d", ref.name, target_level, row, col)
             failed += 1
-            progress.set_postfix(written=written, missing=missing, failed=failed)
+            progress.set_postfix(written=written, skipped=skipped, missing=missing, failed=failed)
             continue
 
         reprojected = reproject_tile_to_4326(image_bytes, bounds)
-        out_path = dest / f"{target_level}_{row}_{col}.tif"
-        reprojected.to_geotiff(out_path)
+        # Write under a temp name and rename into place atomically, so a run
+        # interrupted mid-write never leaves a partial file that a later
+        # resume would mistake for a completed download.
+        tmp_path = out_path.with_name(out_path.name + ".part")
+        reprojected.to_geotiff(tmp_path)
+        tmp_path.replace(out_path)
         written += 1
-        progress.set_postfix(written=written, missing=missing, failed=failed)
+        progress.set_postfix(written=written, skipped=skipped, missing=missing, failed=failed)
     progress.close()
 
     logger.info(
-        "%s: wrote %d tiles, %d not cached at this level, %d failed (year=%s)",
-        ref.full_name, written, missing, failed, extract_year(ref.name),
+        "%s: wrote %d tiles, %d already downloaded, %d not cached at this level, %d failed (year=%s)",
+        ref.full_name, written, skipped, missing, failed, extract_year(ref.name),
     )
-    if written == 0 and missing > 0 and failed == 0:
+    if written == 0 and skipped == 0 and missing > 0 and failed == 0:
         logger.warning(
             "%s: every requested tile was missing at level %d - try a coarser --level "
             "(this service may only have deep-zoom coverage for part of the AOI)",
@@ -132,6 +149,10 @@ def main() -> None:
     parser.add_argument("--bbox", type=float, nargs=4, required=True, metavar=("MINLON", "MINLAT", "MAXLON", "MAXLAT"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--level", type=int, default=None, help="tile LOD level; defaults to each service's finest level")
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="re-fetch tiles even if their output GeoTIFF already exists (default: skip them)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -149,7 +170,7 @@ def main() -> None:
 
     total = 0
     for ref in tqdm(services, desc="services", unit="service"):
-        total += fetch_service(ref, catalog, aoi, args.output_dir, args.level)
+        total += fetch_service(ref, catalog, aoi, args.output_dir, args.level, overwrite=args.overwrite)
 
     logger.info("done: %d tiles written across %d service(s)", total, len(services))
 

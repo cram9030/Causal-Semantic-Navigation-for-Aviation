@@ -44,7 +44,19 @@ one GeoTIFF per tile under `data/raw/dpw_imagery/<service-name>/`.
 | `--base-url URL` | no | `https://geo.sanjoseca.gov/server/rest/services` | Root of the ArcGIS REST services directory to search. |
 | `--name-contains TEXT` | no | `DPW_Imagery` | Substring used to match service names under `Imagery` - matches every historic vintage whose name contains it (e.g. also matches `DPW_ImageryCached2025`), not just one exact name. |
 | `--level N` | no | each service's finest cached level | Tile LOD level to fetch, per that service's own `tileInfo`. The finest level is often only cached for part of the AOI (see note below) - pass a coarser (smaller) level for full-AOI coverage. |
+| `--overwrite` | no | off | Re-fetch a tile even if its output GeoTIFF already exists. Without it, a tile already on disk is skipped - see "Resuming a run" below. |
 | `-v`, `--verbose` | no | off | Enable DEBUG-level logging, including per-tile "not cached at this level" messages that are otherwise suppressed. |
+
+#### Resuming a run
+
+Re-running the same command skips any tile whose output GeoTIFF
+(`<level>_<row>_<col>.tif`) already exists in `<output-dir>/<service-name>/`,
+instead of re-downloading and re-warping it - safe to interrupt (Ctrl-C) and
+restart, or to rerun with a larger/overlapping `--bbox`. Each tile is written
+to a temp file and renamed into place only once it's complete, so an
+interrupted write never leaves a partial file that a later run would
+mistake for a finished download. Pass `--overwrite` to force re-fetching
+everything instead.
 
 Note on `--level` and missing tiles: ArcGIS only generates cache tiles where
 source imagery actually exists, especially at the finest levels, so it's
