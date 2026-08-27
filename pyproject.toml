@@ -22,6 +22,16 @@ dev = [
     "pytest>=8.0",
     "responses>=0.25",
 ]
+# Phase 2 (segmentation/) fine-tuning deps: torch/torchvision's Linux wheels
+# on PyPI bundle CUDA support by default, so `pip install torch` picks up the
+# GPU automatically when one is visible to the process - no separate
+# --index-url needed. See .devcontainer/ for the GPU-enabled dev container.
+ml = [
+    "torch>=2.4",
+    "torchvision>=0.19",
+    "transformers>=4.44",
+    "scikit-learn>=1.4",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
