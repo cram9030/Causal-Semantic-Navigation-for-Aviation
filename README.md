@@ -2,11 +2,13 @@
 
 ## Phase 0: data pipeline
 
-This phase builds the ArcGIS tile client used to collect aerial imagery
-training data from San Jose's ArcGIS Server (`geo.sanjoseca.gov`), covering
-the `DPW_ImageryCached` service and its historic vintages. See
-[`docs/phase0_arcgis_tile_client.md`](docs/phase0_arcgis_tile_client.md) for
-design details.
+This phase builds the ArcGIS clients used to collect San Jose's data sources
+from `geo.sanjoseca.gov`'s ArcGIS Server:
+
+- Aerial imagery (`DPW_ImageryCached` and its historic vintages) - see
+  [`docs/phase0_arcgis_tile_client.md`](docs/phase0_arcgis_tile_client.md).
+- CSJ `Streets` centerlines and the Imagery & Elevation LIDAR product - see
+  [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md).
 
 ### Setup
 
@@ -104,3 +106,33 @@ tiles written vs. not cached vs. failed either way.
 Progress is shown live via a `tqdm` bar (services overall, plus a per-service
 tile bar with running written/missing/failed counts) - useful since a large
 AOI at a fine `--level` can mean fetching thousands of tiles.
+
+### Fetching CSJ Streets for an area of interest
+
+```bash
+python scripts/fetch_csj_streets.py \
+    --bbox -121.95 37.30 -121.85 37.36 \
+    --output data/raw/csj_streets/downtown.geojson
+```
+
+Resolves the `Streets` layer by name (it lives inside a shared, generically
+named service rather than as its own top-level service - see
+[`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md)),
+queries it restricted to `--bbox` (in EPSG:4326; omit `--bbox` to pull the
+whole layer), and writes the results as a GeoJSON `FeatureCollection`.
+Pass `--layer-url` to skip discovery and query a known layer URL directly.
+
+### Fetching LIDAR elevation for an area of interest
+
+```bash
+python scripts/fetch_lidar_elevation.py \
+    --bbox -121.95 37.30 -121.85 37.36 \
+    --output data/raw/lidar/downtown_dem.tif
+```
+
+Resolves San Jose's Imagery & Elevation LIDAR `ImageServer` by name, exports
+a georeferenced elevation raster over `--bbox` (EPSG:4326 throughout - the
+service reprojects server-side), and writes it as a GeoTIFF. Pass
+`--identify LON LAT` instead of `--bbox`/`--output` to print a single point's
+elevation as a quick reachability check, or `--service-url` to skip
+discovery and use a known service URL directly.

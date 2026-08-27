@@ -134,6 +134,10 @@ These manifests are consumed both by the ground-truth builder (to scope which im
 
 ## 6. Repo/module structure (updated)
 
+The layout below is aspirational for everything past Phase 0; the
+`data/acquisition` role is implemented today as `src/csnav/data/arcgis/`
+(see "Implementation note" below for why).
+
 ```
 causal-semantic-nav/
 ├── data/
@@ -160,6 +164,31 @@ causal-semantic-nav/
     └── compare_metrics.py
 ```
 
+**Implementation note (Phase 0):** the imagery, CSJ Streets, and LIDAR
+elevation clients are San Jose-specific ArcGIS Server clients that share one
+set of REST-catalog/model/projection utilities, so in `src/csnav/` they live
+together as one installable package rather than split under a separate
+`data/acquisition/` tree:
+
+```
+src/csnav/data/arcgis/
+├── models.py        # ServiceRef, TileInfo, LevelOfDetail, Extent, ServiceMetadata
+├── projections.py   # EPSG:4326 <-> EPSG:3857 helpers (pyproj)
+├── catalog.py       # ArcGISCatalog: recursive service discovery (+ find_layer() for
+│                     # datasets published as a sublayer of a shared, generically-named
+│                     # service, e.g. CSJ Streets) - no hardcoded service names
+├── tiles.py         # ArcGIS tileInfo-based tile bounds / row-col-for-extent math
+├── client.py         # ArcGISTileClient: imagery via WMTS / /tile / /export
+├── reproject.py       # warp fetched imagery tiles from EPSG:3857 to EPSG:4326 (rasterio)
+├── streets.py          # CSJStreetsClient: paginated /query against the Streets layer, GeoJSON in EPSG:4326
+└── elevation.py          # LidarElevationClient: point identify() + AOI export via /exportImage, EPSG:4326
+```
+
+See `docs/phase0_arcgis_tile_client.md` and `docs/phase0_csj_streets_lidar.md`
+for the rationale behind this layout and the discovery-over-hardcoding
+approach both take. `data/ground_truth/` and everything below it in the
+aspirational tree remain unimplemented (Phase 1+).
+
 ---
 
 ## 7. Software architecture — UML class diagram
@@ -171,15 +200,20 @@ orchestrating `SliceBuilder` and `GCMFitter` per slice before handing off to eva
 
 ```mermaid
 classDiagram
-class SanJoseImageryClient {
-  +fetch_tile(z, x, y) Image
-  +to_wgs84(tile) GeoTIFF
+class ArcGISCatalog {
+  +discover_services(name_contains, service_types) List
+  +find_layer(layer_name_contains, service_name_contains) str
+}
+class ArcGISTileClient {
+  +fetch_tile(level, row, col) bytes
+  +best_transport() TileTransport
 }
 class CSJStreetsClient {
-  +get_streets(bbox) GeoDataFrame
+  +query(bbox, where) List~StreetSegment~
 }
 class LidarElevationClient {
-  +get_elevation(lat, lon) float
+  +identify(lon, lat) float
+  +export_elevation(extent, width, height) bytes
 }
 class GroundTruthBuilder {
   +rasterize(streets, tile) PanopticLabel
@@ -263,8 +297,11 @@ ManifestBuilder ..> LocalFrame : uses
 ManifestBuilder ..> TubeModel : uses
 ManifestBuilder --> LandmarkManifest : creates
 GroundTruthBuilder ..> CSJStreetsClient : uses
-GroundTruthBuilder ..> SanJoseImageryClient : uses
+GroundTruthBuilder ..> ArcGISTileClient : uses
 GroundTruthBuilder ..> LocalFrame : uses
+ArcGISCatalog ..> ArcGISTileClient : resolves service URL for
+ArcGISCatalog ..> CSJStreetsClient : resolves layer URL for
+ArcGISCatalog ..> LidarElevationClient : resolves service URL for
 Mask2FormerModel ..> GroundTruthBuilder : trained on
 Mask2FormerModel --> PanopticResult : produces
 Mask2FormerModel --> ConfusionMatrix : produces
