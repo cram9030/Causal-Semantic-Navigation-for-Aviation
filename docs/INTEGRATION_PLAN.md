@@ -6,18 +6,6 @@
 
 ---
 
-## 0. What changed from v1 / v2
-
-1. **AOI narrowed to San Jose**, with three city data sources replacing NAIP/OSMnx for the pilot:
-   - `DPW_ImageryCached2025` — cached ArcGIS tile service, Santa Clara County, native EPSG:3857, 24 zoom levels down to ~1.9 cm/pixel at max zoom (consistent with an oversampled 3-inch source flight).
-   - `Streets` (CSJ) — weekly-published centerline dataset, ~1,900 miles of roadway, with width/lane attributes.
-   - San Jose's **Imagery and Elevation** open-data category — includes LIDAR-derived contour/elevation products, used for altitude correction (see §2).
-2. **Coordinate handling clarified**: WGS84 everywhere for storage; a local metric frame for geometry math (buffers, tube radii, FOV projection).
-3. **The estimation target was corrected**: the MAP query estimates the aircraft's current state `(lat, lon, height)`, not a corrected scene labeling. Roads/intersections are the *measurement model* that makes that estimation possible, not the output. This restructures the DAG into a trajectory-conditioned, chain-structured causal graph (§3), which is also what makes the inference tractable without re-solving the full flight history every frame.
-4. **v3 adds the UML class diagram (§7)** for the software architecture, reviewed and syntax-corrected, ready to sit alongside this document in the repository.
-
----
-
 ## 1. Data sources (San Jose pilot)
 
 | Source | What it provides | Format / access | Role |
@@ -116,7 +104,7 @@ These manifests are consumed both by the ground-truth builder (to scope which im
 
 ---
 
-## 5. Revised phased plan
+## 5. Phased plan
 
 **Phase 0 — Data plumbing (San Jose-specific)**
 - Build the ArcGIS tile client for `DPW_ImageryCached2025` (WMTS or `/export`/`/tile` endpoints) with EPSG:3857→4326 reprojection
