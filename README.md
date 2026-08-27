@@ -16,6 +16,22 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+#### Dev container (GPU-ready)
+
+`.devcontainer/` defines a CUDA 12.4 dev container (VS Code Dev Containers /
+GitHub Codespaces / any [Dev Containers spec](https://containers.dev/)
+tool), with the [Claude Code CLI](https://code.claude.com/docs/en/devcontainer)
+preinstalled. It picks up a host GPU automatically when one is present
+(`hostRequirements.gpu: "optional"`) and installs the `ml` extra (torch,
+torchvision, transformers, scikit-learn) needed for fine-tuning Mask2Former
+in Phase 2 — see `docs/INTEGRATION_PLAN.md` §5. No GPU is required for
+Phase 0/1 work; the container just runs CPU-only in that case.
+
+Open the repo in VS Code and choose **Dev Containers: Reopen in Container**,
+or run `devcontainer up` from the [Dev Containers CLI](https://github.com/devcontainers/cli).
+On first build, `.devcontainer/post-create.sh` installs the project
+(`pip install -e ".[dev,ml]"`) and prints whether a GPU is visible.
+
 ### Tests
 
 ```bash

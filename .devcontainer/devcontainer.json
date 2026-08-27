@@ -1,0 +1,63 @@
+{
+  "name": "causal-semantic-nav",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+
+  // "optional" (rather than `true`) so the container still builds and runs
+  // on machines without an NVIDIA GPU/driver — most Phase 0/1 work (tile
+  // fetching, manifest building) doesn't need one. Tooling that honors
+  // hostRequirements.gpu (VS Code Dev Containers, the devcontainer CLI)
+  // passes the GPU through automatically when one is present on the host;
+  // otherwise the container just runs CPU-only. Phase 2 Mask2Former
+  // fine-tuning needs an actual GPU-equipped host to be useful — this
+  // setting only ensures the container doesn't block it.
+  "hostRequirements": {
+    "gpu": "optional"
+  },
+
+  // If your tool doesn't honor hostRequirements.gpu, pass the GPU through
+  // explicitly instead: "runArgs": ["--gpus=all"] — but note this makes the
+  // container fail to start on hosts without the NVIDIA Container Toolkit.
+  "containerEnv": {
+    "NVIDIA_VISIBLE_DEVICES": "all",
+    "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+    "PYTHONUNBUFFERED": "1",
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude"
+  },
+
+  // Persists Claude Code auth/settings/session history across container
+  // rebuilds; scoped per-devcontainer via ${devcontainerId} so multiple
+  // projects don't share one volume. See
+  // https://code.claude.com/docs/en/devcontainer#persist-authentication-and-settings-across-rebuilds
+  "mounts": [
+    "source=claude-code-config-${devcontainerId},target=/home/vscode/.claude,type=volume"
+  ],
+
+  "features": {
+    // Claude Code's dev container feature auto-installs Node if missing,
+    // but it's declared explicitly here (and ordered first) so the version
+    // is pinned rather than left to best-effort auto-detection.
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    },
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+
+  "remoteUser": "vscode",
+
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python"
+      }
+    }
+  }
+}
