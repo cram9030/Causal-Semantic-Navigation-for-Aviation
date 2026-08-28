@@ -152,6 +152,52 @@ print a single point's elevation rather than fetching a raster. See
 [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
 the full story of how this data source was chosen.
 
+### Data versioning (DVC)
+
+The three fetch scripts above are also wired up as a [DVC](https://dvc.org)
+pipeline (`dvc.yaml` + `params.yaml`), so the AOI-scoped data pulls are
+reproducible and their large outputs (imagery GeoTIFFs, the streets
+GeoJSON, the LIDAR DEM) are versioned outside of git rather than just
+gitignored-and-hoped-for. `data/raw/` and `*.tif` stay gitignored as
+before - that's unaffected by and compatible with DVC, which tracks the
+actual bytes separately via its own content-addressed cache, referenced
+from git only through `dvc.yaml`/`dvc.lock`.
+
+```bash
+pip install -e ".[dev,dvc]"
+dvc repro          # (re)run any stage whose script/deps/params changed
+dvc dag             # show the pipeline graph
+dvc push / dvc pull # sync tracked data with the configured remote
+```
+
+Stage parameters (AOI bbox, service URLs, output paths) live in
+`params.yaml`, not hardcoded in the scripts - edit a value and `dvc repro`
+reruns only the affected stage(s). For a one-off run without touching the
+file, use `dvc exp run --set-param aoi.min_lon=-121.90 ...`.
+
+The `.dvc/config` checked in here points the default remote at a
+**local placeholder directory** (`../csnav-dvc-storage`, a sibling of the
+repo) so a solo checkout works with zero setup. Before this is used by
+more than one machine/collaborator, or at San Jose-imagery scale, swap it
+for real object storage, e.g.:
+
+```bash
+dvc remote add -d storage s3://<bucket>/csnav-dvc     # or gs://, azure://, etc.
+```
+
+(and add the matching extra - `dvc[s3]`, `dvc[gs]`, `dvc[azure]` - to
+`pyproject.toml`'s `dvc` group in place of the plain `dvc` pin.)
+
+Unimplemented past Phase 0 (see `docs/INTEGRATION_PLAN.md` ss6): a
+`build_manifest` stage for `trajectory/ManifestBuilder` once it exists,
+parameterized by `manifest.tube_radius_m` in `params.yaml` (placeholder
+left commented there) so the CONOPS/altitude tube-radius sweep CLAUDE.md
+calls for is a `dvc exp run --set-param manifest.tube_radius_m=<value>`
+away rather than a code change; and, once `segmentation/` lands, stages
+for Mask2Former training/checkpoints and `dvc.yaml` `metrics:`/`plots:`
+entries for the Phase 4 Integrity Risk / Time-to-Alert / Availability
+comparison.
+
 ### Converting between WGS84 and a local ENU tangent plane
 
 ```python

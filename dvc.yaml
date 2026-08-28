@@ -1,0 +1,87 @@
+# DVC pipeline for the Phase 0 data-acquisition scripts (see
+# docs/INTEGRATION_PLAN.md ss5). Each stage wraps one of the existing
+# scripts/fetch_*.py CLIs as-is; nothing about those scripts changed to
+# wire this up. Values come from params.yaml so a rerun with different
+# AOI/service settings is `dvc repro` after editing params.yaml (or
+# `dvc exp run --set-param ...` for a one-off), not an edited script.
+#
+# `data/raw/` and `*.tif` are already gitignored (see .gitignore) - that's
+# unaffected by and compatible with DVC: git still never sees the raw
+# bytes, DVC tracks them separately via its own cache/remote, addressed by
+# this file plus the generated dvc.lock.
+stages:
+  fetch_imagery:
+    cmd: >-
+      python scripts/fetch_historic_imagery.py
+      --bbox ${aoi.min_lon} ${aoi.min_lat} ${aoi.max_lon} ${aoi.max_lat}
+      --output-dir ${imagery.output_dir}
+      --base-url ${imagery.base_url}
+      --name-contains ${imagery.name_contains}
+      --coverage-sample-size ${imagery.coverage_sample_size}
+    deps:
+      - scripts/fetch_historic_imagery.py
+      - src/csnav/data/arcgis
+    params:
+      - aoi.min_lon
+      - aoi.min_lat
+      - aoi.max_lon
+      - aoi.max_lat
+      - imagery.output_dir
+      - imagery.base_url
+      - imagery.name_contains
+      - imagery.coverage_sample_size
+    outs:
+      - ${imagery.output_dir}
+
+  fetch_streets:
+    cmd: >-
+      python scripts/fetch_csj_streets.py
+      --bbox ${aoi.min_lon} ${aoi.min_lat} ${aoi.max_lon} ${aoi.max_lat}
+      --output ${streets.output}
+      --base-url ${streets.base_url}
+      --root ${streets.root}
+      --service-name-contains ${streets.service_name_contains}
+      --layer-name-contains ${streets.layer_name_contains}
+      --where "${streets.where}"
+      --page-size ${streets.page_size}
+    deps:
+      - scripts/fetch_csj_streets.py
+      - src/csnav/data/arcgis
+    params:
+      - aoi.min_lon
+      - aoi.min_lat
+      - aoi.max_lon
+      - aoi.max_lat
+      - streets.output
+      - streets.base_url
+      - streets.root
+      - streets.service_name_contains
+      - streets.layer_name_contains
+      - streets.where
+      - streets.page_size
+    outs:
+      - ${streets.output}
+
+  fetch_lidar:
+    cmd: >-
+      python scripts/fetch_lidar_elevation.py
+      --bbox ${aoi.min_lon} ${aoi.min_lat} ${aoi.max_lon} ${aoi.max_lat}
+      --output ${lidar.output}
+      --width ${lidar.width}
+      --height ${lidar.height}
+      --pixel-type ${lidar.pixel_type}
+    deps:
+      - scripts/fetch_lidar_elevation.py
+      - src/csnav/data/lidar.py
+      - src/csnav/data/arcgis/models.py
+    params:
+      - aoi.min_lon
+      - aoi.min_lat
+      - aoi.max_lon
+      - aoi.max_lat
+      - lidar.output
+      - lidar.width
+      - lidar.height
+      - lidar.pixel_type
+    outs:
+      - ${lidar.output}

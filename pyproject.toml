@@ -32,6 +32,14 @@ ml = [
     "transformers>=4.44",
     "scikit-learn>=1.4",
 ]
+# Data/pipeline version control (see docs/ data-VCS comparison) for
+# dvc.yaml + params.yaml: acquisition pipeline reproducibility and, later,
+# tube-radius/manifest and segmentation-checkpoint tracking. No cloud
+# remote extra (dvc[s3]/dvc[gs]/dvc[azure]) is pinned yet - add one once a
+# storage backend is chosen; see README's "Data versioning (DVC)" section.
+dvc = [
+    "dvc>=3.55",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

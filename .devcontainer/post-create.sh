@@ -11,7 +11,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 #          path is ready to use, not something a contributor has to
 #          remember to opt into. Both are declared in pyproject.toml so
 #          this stays the single source of truth for versions.
-pip install --no-cache-dir -e ".[dev,ml]"
+# `dvc`  - data/pipeline version control for dvc.yaml + params.yaml (see
+#          README's "Data versioning (DVC)" section).
+pip install --no-cache-dir -e ".[dev,ml,dvc]"
 
 echo "--- GPU check ---"
 python -c "
