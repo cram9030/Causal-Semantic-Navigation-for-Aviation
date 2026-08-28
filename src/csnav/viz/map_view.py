@@ -6,12 +6,14 @@ browser with real San Jose imagery underneath, which is what makes a tube
 radius or a tile footprint reviewable ("does that corridor actually cover the
 streets we expect?").
 
-Three entry points:
+Entry points:
 
-* :func:`trajectory_set_map` - all of ``T`` at once: every candidate and
-  transition corridor, each with its tube, plus ``x_0``.
-* :func:`trajectory_map` - one trajectory in detail: its tube corridor, the
+* :func:`trajectory_set_map` - all of ``T`` at once: every candidate route with
+  its tube, every transition family with the region it can reach, plus ``x_0``.
+* :func:`trajectory_map` - one route in detail: its tube corridor, the
   per-window visible footprints, and the imagery tiles those footprints cover.
+* :func:`transition_map` - one transition family in detail: every sampled path,
+  where each initiates on the source, and the region the family sweeps.
 * :func:`manifest_map` - a built manifest drawn over its trajectory: the
   candidate roads and intersections actually pinned for each window.
 
@@ -30,22 +32,31 @@ from shapely.geometry import Polygon
 
 from csnav.data.arcgis.models import Extent, TileInfo
 from csnav.data.arcgis.tiles import web_mercator_tile_info
-from csnav.geometry.fov import FieldOfView
+from csnav.geometry.camera import Camera
 from csnav.trajectory.config import ConopsConfig
 from csnav.trajectory.coverage import (
     AglProvider,
     TileRef,
     height_as_agl,
     max_agl,
+    max_ground_reach,
     merge_tiles,
     tiles_for_footprint,
     visible_footprint,
 )
 from csnav.trajectory.manifest import LandmarkManifest, ManifestBundle
-from csnav.trajectory.trajectory import Trajectory, TrajectorySet
+from csnav.trajectory.trajectory import X0_NODE, Trajectory, TrajectorySet, TransitionRule
+from csnav.trajectory.transition import TransitionFamily, TransitionModel
 from csnav.trajectory.tube import TubeModel
-from csnav.trajectory.waypoints import TrajectoryRole, Waypoint
-from csnav.viz.style import INTERSECTION_COLOR, LANDMARK_COLOR, ROLE_LABELS, TILE_COLOR, color_for
+from csnav.trajectory.waypoints import Waypoint
+from csnav.viz.style import (
+    INTERSECTION_COLOR,
+    LANDMARK_COLOR,
+    ROLE_LABELS,
+    TILE_COLOR,
+    TRANSITION_COLOR,
+    color_for,
+)
 
 #: San Jose's own cached aerial imagery, as an XYZ-addressable overlay. This is
 #: the same cache :class:`csnav.data.arcgis.client.ArcGISTileClient` fetches
@@ -194,21 +205,96 @@ def _fit(fmap, bounds) -> None:
     fmap.fit_bounds([[bounds.ymin, bounds.xmin], [bounds.ymax, bounds.xmax]])
 
 
+def _add_transition_family(
+    group,
+    family: TransitionFamily,
+    source: Trajectory,
+    tube,
+    color: str,
+) -> None:
+    """Draw one transition family: its swept reachable region, then each sampled path."""
+    folium = _folium()
+    footprint = family.reachable_footprint(tube)
+    if not footprint.is_empty:
+        _add_corridor(
+            group,
+            footprint,
+            color,
+            (
+                f"{family.rule.source} &#8594; {family.rule.target}<br>"
+                f"reachable while transitioning (tube {tube.radius:.0f} m)<br>"
+                f"{len(family)} sampled initiations across "
+                f"{family.domain[0]:.0f}-{family.domain[1]:.0f} m of the source"
+            ),
+            fill_opacity=0.10,
+        )
+    for path in family.paths:
+        origin = source.point_at(path.initiate_distance)
+        folium.PolyLine(
+            [[wp.lat, wp.lon] for wp in path.trajectory.waypoints],
+            color=color,
+            weight=2,
+            opacity=0.85,
+            dash_array="6,4",
+            tooltip=(
+                f"{path.source_id} &#8594; {path.target_id}<br>"
+                f"initiates at {path.initiate_distance:.0f} m of arc length "
+                f"(t = {origin.time:.0f} s)<br>"
+                f"rejoins at waypoint {path.arrival_index} "
+                f"({path.arrival_distance:.0f} m along the target)<br>"
+                f"turns: {path.departure_turn:.0f}&#176; out, {path.arrival_turn:.0f}&#176; in"
+            ),
+        ).add_to(group)
+        folium.CircleMarker(
+            location=[origin.lat, origin.lon],
+            radius=3,
+            color=color,
+            fill=True,
+            fill_opacity=0.9,
+            weight=1,
+            tooltip=f"transition initiates here ({path.initiate_distance:.0f} m along {path.source_id})",
+        ).add_to(group)
+
+
+def transition_families(
+    trajectory_set: TrajectorySet, model: TransitionModel
+) -> dict[tuple[str, str], TransitionFamily]:
+    """Generate every transition family the set's rules admit, keyed by ``(source, target)``.
+
+    Entry rules out of ``x_0`` are skipped: they mark a route as flyable from
+    the start and carry no geometry.
+    """
+    families: dict[tuple[str, str], TransitionFamily] = {}
+    for rule in trajectory_set.transitions:
+        if rule.source == X0_NODE:
+            continue
+        families[rule.key] = model.family(
+            trajectory_set.by_id(rule.source), trajectory_set.by_id(rule.target), rule
+        )
+    return families
+
+
 def trajectory_set_map(
     trajectory_set: TrajectorySet,
     conops: ConopsConfig,
     agl_provider: AglProvider = height_as_agl,
     show_visible_footprint: bool = True,
+    show_transitions: bool = True,
     include_imagery: bool = True,
 ):
-    """Map the whole candidate set ``T``: every trajectory with its own tube corridor.
+    """Map the whole candidate set ``T``: every route with its tube, every transition family.
 
-    Each trajectory gets its own toggleable layer holding the centerline, its
-    waypoints, the tube corridor at the radius ``conops`` assigns it, and -
-    when ``show_visible_footprint`` is set and the CONOPS declares a field of
-    view - the wider footprint that tube can actually see. Transition corridors
-    are drawn too, at whatever radius the CONOPS gives them, since §8 of the
-    integration plan leaves that as its own open case.
+    Each route gets a toggleable layer holding its centerline, its waypoints,
+    the tube corridor at the radius ``conops`` assigns it, and - when
+    ``show_visible_footprint`` is set and a camera is configured - the wider
+    footprint that tube can actually see.
+
+    Each transition rule gets its own layer holding the *family* it admits: one
+    dashed path per sampled initiation point, a marker where each begins on the
+    source, and the shaded union of their tubes. That union is the point of the
+    layer: a transition may begin anywhere along the source, so the aircraft may
+    be anywhere in that region while transitioning, not only on one of the drawn
+    curves.
     """
     folium = _folium()
     centre = trajectory_set.bounds
@@ -223,16 +309,14 @@ def trajectory_set_map(
         color = color_for(trajectory.id, trajectory.role, order)
         group = folium.FeatureGroup(
             name=f"{trajectory.id} - {ROLE_LABELS[trajectory.role]} (tube {tube.radius:.0f} m)",
-            show=trajectory.role is not TrajectoryRole.TRANSITION,
+            show=True,
         )
-        if show_visible_footprint and conops.field_of_view is not None:
+        if show_visible_footprint and conops.camera is not None:
             _add_corridor(
                 group,
-                visible_footprint(
-                    trajectory, tube, field_of_view=conops.field_of_view, agl_provider=agl_provider
-                ),
+                visible_footprint(trajectory, tube, camera=conops.camera, agl_provider=agl_provider),
                 color,
-                f"{trajectory.id}: tube {tube.radius:.0f} m + FOV ground radius",
+                f"{trajectory.id}: tube {tube.radius:.0f} m + camera ground reach",
                 fill_opacity=0.07,
             )
         _add_corridor(group, tube.corridor(trajectory), color, f"{trajectory.id}: tube radius {tube.radius:.0f} m")
@@ -240,7 +324,72 @@ def trajectory_set_map(
         _add_waypoints(group, trajectory, color)
         group.add_to(fmap)
 
+    if show_transitions:
+        for (source_id, target_id), family in transition_families(
+            trajectory_set, conops.transition
+        ).items():
+            source = trajectory_set.by_id(source_id)
+            tube = conops.tube_for(family.paths[0].trajectory) if family.paths else conops.tube_for(source)
+            group = folium.FeatureGroup(
+                # Layer-control names go through JSON escaping, so an arrow -
+                # entity or ASCII - comes back out as a literal escape sequence.
+                name=f"{source_id} to {target_id}: {len(family)} transitions (tube {tube.radius:.0f} m)",
+                show=False,
+            )
+            _add_transition_family(group, family, source, tube, TRANSITION_COLOR)
+            group.add_to(fmap)
+
     _add_x0(fmap, trajectory_set.x0)
+    folium.LayerControl(collapsed=False).add_to(fmap)
+    _fit(fmap, trajectory_set.bounds)
+    return fmap
+
+
+def transition_map(
+    trajectory_set: TrajectorySet,
+    conops: ConopsConfig,
+    rule: TransitionRule,
+    include_imagery: bool = True,
+):
+    """One transition family in detail, over its source and target routes.
+
+    Shows what the rule actually admits: where along the source each sampled
+    hand-off begins, the curve it flies, the waypoint it rejoins at, and the
+    region the whole family sweeps - which is where the aircraft may be while
+    the transition is under way.
+    """
+    folium = _folium()
+    source = trajectory_set.by_id(rule.source)
+    target = trajectory_set.by_id(rule.target)
+    family = conops.transition.family(source, target, rule)
+
+    bounds = trajectory_set.bounds
+    fmap = base_map(
+        ((bounds.ymin + bounds.ymax) / 2.0, (bounds.xmin + bounds.xmax) / 2.0),
+        include_imagery=include_imagery,
+    )
+    order = tuple(t.id for t in trajectory_set.trajectories)
+
+    for trajectory, label in ((source, "source"), (target, "target")):
+        color = color_for(trajectory.id, trajectory.role, order)
+        tube = conops.tube_for(trajectory)
+        group = folium.FeatureGroup(name=f"{label}: {trajectory.id} (tube {tube.radius:.0f} m)", show=True)
+        _add_corridor(group, tube.corridor(trajectory), color, f"{trajectory.id}: tube {tube.radius:.0f} m")
+        _add_centerline(group, trajectory, color)
+        _add_waypoints(group, trajectory, color)
+        group.add_to(fmap)
+
+    transition_tube = conops.tube_for(family.paths[0].trajectory) if family.paths else conops.tube_for(source)
+    group = folium.FeatureGroup(
+        name=(
+            f"transition family - {len(family)} paths, {family.rejected} screened out "
+            f"(tube {transition_tube.radius:.0f} m)"
+        ),
+        show=True,
+    )
+    _add_transition_family(group, family, source, transition_tube, TRANSITION_COLOR)
+    group.add_to(fmap)
+
     folium.LayerControl(collapsed=False).add_to(fmap)
     _fit(fmap, trajectory_set.bounds)
     return fmap
@@ -250,7 +399,7 @@ def trajectory_map(
     trajectory: Trajectory,
     tube: TubeModel,
     window_length: float,
-    field_of_view: FieldOfView | None = None,
+    camera: Camera | None = None,
     tile_info: TileInfo | None = None,
     tile_level: int | None = None,
     agl_provider: AglProvider = height_as_agl,
@@ -265,7 +414,7 @@ def trajectory_map(
     * the tube corridor at ``tube.radius`` meters;
     * one visible footprint per manifest window (``window_length`` meters of arc
       length each), each tooltipped with its window id, arc-length span, and
-      the AGL and FOV ground radius that sized it;
+      the AGL and camera ground reach that sized it;
     * the imagery tiles those footprints cover, when ``tile_info``/``tile_level``
       are given.
 
@@ -296,11 +445,11 @@ def trajectory_map(
     )
     for window in windows:
         footprint = visible_footprint(
-            trajectory, tube, window=window, field_of_view=field_of_view, agl_provider=agl_provider
+            trajectory, tube, window=window, camera=camera, agl_provider=agl_provider
         )
         footprints.append(footprint)
         agl = max_agl(trajectory, window, agl_provider)
-        extra = field_of_view.ground_radius(agl) if field_of_view else 0.0
+        extra = 0.0 if camera is None else max_ground_reach(trajectory, window, camera, agl_provider)
         _add_corridor(
             window_group,
             footprint,
@@ -309,7 +458,7 @@ def trajectory_map(
                 f"window {window.window_id}<br>"
                 f"arc {window.start_distance:.0f}-{window.end_distance:.0f} m, "
                 f"t {window.start_time:.0f}-{window.end_time:.0f} s<br>"
-                f"max AGL {agl:.0f} m, FOV ground radius {extra:.0f} m<br>"
+                f"max AGL {agl:.0f} m, camera ground reach {extra:.0f} m<br>"
                 f"search radius {tube.radius + extra:.0f} m"
             ),
             fill_opacity=0.08,
@@ -330,9 +479,7 @@ def trajectory_map(
     folium.LayerControl(collapsed=False).add_to(fmap)
     # Fit to the widest thing drawn - the FOV-grown footprint, not the bare tube.
     outer_margin = (
-        field_of_view.ground_radius(max(agl_provider(wp) for wp in trajectory.waypoints))
-        if field_of_view
-        else 0.0
+        0.0 if camera is None else max_ground_reach(trajectory, None, camera, agl_provider)
     )
     _fit(fmap, tube.envelope(trajectory, extra_buffer=outer_margin))
     return fmap
@@ -464,7 +611,7 @@ def bundle_map(
         color = color_for(trajectory.id, trajectory.role, order)
         group = folium.FeatureGroup(
             name=f"{trajectory.id} ({len(manifests)} windows, tube {manifests[0].tube_radius:.0f} m)",
-            show=trajectory.role is not TrajectoryRole.TRANSITION,
+            show=True,
         )
         for manifest in manifests:
             _add_corridor(

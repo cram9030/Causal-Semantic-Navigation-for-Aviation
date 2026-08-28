@@ -20,7 +20,6 @@ from shapely.geometry import Point as ShapelyPoint
 
 from csnav.data.arcgis.streets import StreetSegment
 from csnav.data.arcgis.tiles import web_mercator_tile_info
-from csnav.geometry.fov import FieldOfView
 from csnav.geometry.local_frame import LocalFrame
 from csnav.trajectory.manifest_builder import ManifestBuilder, StaticStreetsSource
 from csnav.trajectory.tube import TubeModel
@@ -97,14 +96,29 @@ def test_a_wider_tube_admits_more_streets(builder, due_east):
     assert narrow.tube_radius == 200.0 and wide.tube_radius == 300.0
 
 
-def test_field_of_view_extends_the_manifest_beyond_the_tube(builder, due_east):
+def test_the_camera_extends_the_manifest_beyond_the_tube(builder, due_east, camera):
     """The 260 m street is outside a 200 m tube but visible from inside it."""
-    fov = FieldOfView(horizontal_deg=60.0, vertical_deg=45.0)
-    manifest = builder.build_trajectory(due_east, TubeModel(radius=200.0), 10_000.0, field_of_view=fov)[0]
+    manifest = builder.build_trajectory(due_east, TubeModel(radius=200.0), 10_000.0, camera=camera)[0]
 
     assert "Parallel 260" in {road.name for road in manifest.candidate_roads}
     assert "Parallel 5000" not in {road.name for road in manifest.candidate_roads}
     assert manifest.max_agl == pytest.approx(300.0)
+    assert manifest.ground_reach == pytest.approx(camera.ground_reach(300.0))
+
+
+def test_a_manifest_built_without_a_camera_records_no_ground_reach(builder, due_east):
+    manifest = builder.build_trajectory(due_east, TubeModel(radius=200.0), 10_000.0)[0]
+    assert manifest.ground_reach == 0.0
+
+
+def test_camera_settings_travel_with_the_pinned_bundle(streets, trajectory_set, conops):
+    """A pinned manifest has to say what saw what, not just how wide the tube was."""
+    bundle = ManifestBuilder(streets=streets).build_set(trajectory_set, conops)
+    recorded = bundle.parameters["camera"]
+
+    assert recorded["horizontal_deg"] == conops.camera.field_of_view.horizontal_deg
+    assert recorded["pose_pitch_deg"] == conops.camera.pose.pitch_deg
+    assert recorded["maneuver_radius_m"] == conops.camera.attitude_margin.maneuver_radius
 
 
 def test_recorded_offsets_match_the_streets_true_cross_track_distance(builder, due_east):
@@ -203,15 +217,10 @@ def test_build_set_covers_every_trajectory_and_records_its_parameters(streets, t
     assert bundle.pinned_at
 
 
-def test_build_set_gives_transition_corridors_their_own_radius(streets, trajectory_set, conops):
+def test_build_set_covers_the_candidate_routes_at_the_conops_radius(streets, trajectory_set, conops):
+    """Manifests are built per candidate route; transition families are Phase 1.5."""
     bundle = ManifestBuilder(streets=streets).build_set(trajectory_set, conops)
-    corridor_manifests = bundle.for_trajectory("x_east_to_north")
-
-    assert corridor_manifests
-    assert all(manifest.tube_radius == conops.transition_tube_radius for manifest in corridor_manifests)
-    assert all(
-        manifest.tube_radius == conops.tube_radius for manifest in bundle.for_trajectory("due_east")
-    )
+    assert all(manifest.tube_radius == conops.tube_radius for manifest in bundle.manifests)
 
 
 def test_runtime_lookup_does_not_touch_the_street_source(builder, due_east):

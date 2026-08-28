@@ -7,11 +7,13 @@ from pyproj import Geod
 from shapely.geometry import Point as ShapelyPoint, box
 
 from csnav.data.arcgis.tiles import web_mercator_tile_info
+from csnav.geometry.camera import AttitudeMargin, Camera
 from csnav.geometry.fov import FieldOfView
 from csnav.trajectory.coverage import (
     agl_from_elevation,
     height_as_agl,
     max_agl,
+    max_ground_reach,
     merge_tiles,
     tiles_for_footprint,
     visible_footprint,
@@ -47,14 +49,13 @@ def test_max_agl_uses_the_highest_point_in_the_window(dogleg):
     assert max_agl(dogleg, window, height_as_agl) == pytest.approx(400.0, abs=1.0)
 
 
-def test_visible_footprint_without_a_fov_is_just_the_tube(due_east, tube):
+def test_visible_footprint_without_a_camera_is_just_the_tube(due_east, tube):
     assert visible_footprint(due_east, tube).equals(tube.corridor(due_east))
 
 
-def test_visible_footprint_extends_the_tube_by_the_fov_ground_radius(due_east, tube):
-    fov = FieldOfView(horizontal_deg=60.0, vertical_deg=45.0)
-    footprint = visible_footprint(due_east, tube, field_of_view=fov)
-    extra = fov.ground_radius(due_east.waypoints[0].height)
+def test_visible_footprint_extends_the_tube_by_the_camera_ground_reach(due_east, tube, camera):
+    footprint = visible_footprint(due_east, tube, camera=camera)
+    extra = camera.ground_reach(due_east.waypoints[0].height)
 
     midpoint = due_east.point_at(due_east.length / 2.0)
     inside_lon, inside_lat, _ = _GEOD.fwd(midpoint.lon, midpoint.lat, 0.0, tube.radius + extra - 20.0)
@@ -62,6 +63,44 @@ def test_visible_footprint_extends_the_tube_by_the_fov_ground_radius(due_east, t
 
     assert footprint.contains(ShapelyPoint(inside_lon, inside_lat))
     assert not footprint.contains(ShapelyPoint(outside_lon, outside_lat))
+
+
+def test_a_nadir_camera_reaches_exactly_as_far_as_its_bare_field_of_view(due_east, camera):
+    """The prototype's mounting must not change the numbers the plain FOV gives."""
+    window = due_east.windows(1000.0)[0]
+    agl = max_agl(due_east, window, height_as_agl)
+    assert max_ground_reach(due_east, window, camera) == pytest.approx(
+        camera.field_of_view.ground_radius(agl)
+    )
+
+
+def test_ground_reach_widens_near_a_waypoint_when_a_maneuver_margin_is_set(due_east, tube):
+    """The mechanism the pose-buffer requirement asks for: more room around waypoints."""
+    fov = FieldOfView(horizontal_deg=60.0, vertical_deg=45.0)
+    level = Camera(fov)
+    banking = Camera(
+        fov, attitude_margin=AttitudeMargin(maneuver_roll_deg=25.0, maneuver_radius=300.0)
+    )
+    windows = due_east.windows(500.0)
+
+    first = windows[0]  # starts at a waypoint
+    assert max_ground_reach(due_east, first, banking) > max_ground_reach(due_east, first, level)
+    assert visible_footprint(due_east, tube, first, banking).area > visible_footprint(
+        due_east, tube, first, level
+    ).area
+
+
+def test_a_zero_margin_leaves_the_footprint_unchanged(due_east, tube, camera):
+    """Default behaviour for the first proof of concept: as if the aircraft were level."""
+    with_margin = Camera(camera.field_of_view, attitude_margin=AttitudeMargin())
+    window = due_east.windows(1000.0)[0]
+    assert visible_footprint(due_east, tube, window, with_margin).equals(
+        visible_footprint(due_east, tube, window, camera)
+    )
+
+
+def test_max_agl_over_the_whole_trajectory_when_no_window_is_given(dogleg):
+    assert max_agl(dogleg, None, height_as_agl) == pytest.approx(400.0, abs=1.0)
 
 
 def test_tiles_for_footprint_cover_the_footprint(due_east, tube):

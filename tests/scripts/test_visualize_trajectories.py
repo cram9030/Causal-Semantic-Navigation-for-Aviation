@@ -4,10 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-import matplotlib
 import pytest
-
-matplotlib.use("Agg")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -24,20 +21,32 @@ def _run(module, argv, monkeypatch):
     module.main()
 
 
-def test_visualize_writes_a_figure_and_one_map_per_trajectory(tmp_path, monkeypatch):
+def test_visualize_writes_a_report_and_a_map_per_route_and_transition(tmp_path, monkeypatch):
     from csnav.trajectory.config import load_scenario
+    from csnav.trajectory.trajectory import X0_NODE
 
     _run(
         vt,
-        ["--scenario", str(PILOT_SCENARIO), "--output-dir", str(tmp_path), "--no-tiles", "--dpi", "80"],
+        [
+            "--scenario", str(PILOT_SCENARIO),
+            "--output-dir", str(tmp_path),
+            "--no-tiles",
+            "--transition-samples", "3",
+        ],
         monkeypatch,
     )
 
-    scenario = load_scenario(PILOT_SCENARIO)
-    assert (tmp_path / "trajectory_graph.png").stat().st_size > 5_000
+    trajectory_set = load_scenario(PILOT_SCENARIO).trajectory_set
+    report = (tmp_path / "trajectory_graph.html").read_text(encoding="utf-8")
+
+    assert "Plotly.newPlot" in report
     assert (tmp_path / "trajectory_set.html").exists()
-    for trajectory in scenario.trajectory_set.trajectories:
+    for trajectory in trajectory_set.trajectories:
         assert (tmp_path / f"trajectory_{trajectory.id}.html").exists()
+    for rule in trajectory_set.transitions:
+        if rule.source == X0_NODE:
+            continue
+        assert (tmp_path / f"transition_{rule.source}__{rule.target}.html").exists()
 
 
 def test_visualize_tube_radius_override_reaches_the_rendered_maps(tmp_path, monkeypatch):
@@ -48,8 +57,8 @@ def test_visualize_tube_radius_override_reaches_the_rendered_maps(tmp_path, monk
             "--output-dir", str(tmp_path),
             "--tube-radius", "500",
             "--no-tiles",
+            "--no-transitions",
             "--no-imagery",
-            "--dpi", "80",
         ],
         monkeypatch,
     )
@@ -57,6 +66,7 @@ def test_visualize_tube_radius_override_reaches_the_rendered_maps(tmp_path, monk
     html = (tmp_path / "trajectory_t_p.html").read_text(encoding="utf-8")
     assert "tube corridor (500 m radius)" in html
     assert "geo.sanjoseca.gov" not in html  # --no-imagery
+    assert not list(tmp_path.glob("transition_*.html"))  # --no-transitions
 
 
 def test_build_manifests_pins_a_bundle_from_an_archived_streets_pull(tmp_path, monkeypatch):

@@ -48,6 +48,7 @@ def test_manifest_geometry_survives_the_round_trip(bundle, tmp_path):
         assert copy.window_id == original.window_id
         assert copy.tube_radius == original.tube_radius
         assert copy.max_agl == pytest.approx(original.max_agl)
+        assert copy.ground_reach == pytest.approx(original.ground_reach)
         assert copy.footprint.equals_exact(original.footprint, 1e-12)
         assert [road.segment_id for road in copy.candidate_roads] == [
             road.segment_id for road in original.candidate_roads

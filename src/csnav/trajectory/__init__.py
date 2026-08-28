@@ -11,6 +11,8 @@ from csnav.trajectory.coverage import (
     TileRef,
     agl_from_elevation,
     height_as_agl,
+    max_agl,
+    max_ground_reach,
     merge_tiles,
     tiles_for_footprint,
     visible_footprint,
@@ -28,8 +30,10 @@ from csnav.trajectory.trajectory import (
     TrajectoryError,
     TrajectorySet,
     TrajectoryWindow,
-    Transition,
+    TransitionError,
+    TransitionRule,
 )
+from csnav.trajectory.transition import TransitionFamily, TransitionModel, TransitionPath, transition_id
 from csnav.trajectory.tube import TubeModel, union_corridor
 from csnav.trajectory.waypoints import TrajectoryRole, Waypoint
 
@@ -49,15 +53,22 @@ __all__ = [
     "TrajectoryRole",
     "TrajectorySet",
     "TrajectoryWindow",
-    "Transition",
+    "TransitionError",
+    "TransitionFamily",
+    "TransitionModel",
+    "TransitionPath",
+    "TransitionRule",
     "TubeModel",
     "Waypoint",
     "X0_NODE",
     "agl_from_elevation",
     "height_as_agl",
     "load_scenario",
+    "max_agl",
+    "max_ground_reach",
     "merge_tiles",
     "tiles_for_footprint",
+    "transition_id",
     "union_corridor",
     "visible_footprint",
 ]

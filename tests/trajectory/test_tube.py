@@ -112,6 +112,6 @@ def test_envelope_bounds_the_corridor(due_east, tube):
     )
 
 
-def test_union_corridor_merges_several_trajectories(due_east, due_north):
-    merged = union_corridor([(due_east, TubeModel(200.0)), (due_north, TubeModel(200.0))])
+def test_union_corridor_merges_several_trajectories(due_east, parallel_north):
+    merged = union_corridor([(due_east, TubeModel(200.0)), (parallel_north, TubeModel(200.0))])
     assert merged.area > TubeModel(200.0).corridor(due_east).area
