@@ -15,18 +15,32 @@ from `geo.sanjoseca.gov`'s ArcGIS Server:
 
 ### Setup
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency
+management - it reads `pyproject.toml` and installs the exact versions
+pinned in the committed `uv.lock`, rather than resolving fresh against
+whatever's newest on PyPI (torch in particular moves fast enough that an
+unpinned install can silently jump to a much larger/newer CUDA stack
+between one setup and the next). [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
+if you don't have it, then:
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
+
+This creates a `.venv/` and installs the project in editable mode plus the
+`dev` extra (pytest, responses). Run commands inside it with `uv run`
+(e.g. `uv run pytest`), or `source .venv/bin/activate` to work in it
+directly. Add `--extra ml` and/or `--extra dvc` (or `--all-extras` for
+everything) as needed - see "Dev container" and "Data versioning (DVC)"
+below.
 
 #### Dev container (GPU-ready)
 
 `.devcontainer/` defines a CUDA 12.4 dev container (VS Code Dev Containers /
 GitHub Codespaces / any [Dev Containers spec](https://containers.dev/)
-tool), with the [Claude Code CLI](https://code.claude.com/docs/en/devcontainer)
-preinstalled. It picks up a host GPU automatically when one is present
+tool), with [uv](https://docs.astral.sh/uv/) and the
+[Claude Code CLI](https://code.claude.com/docs/en/devcontainer) preinstalled.
+It picks up a host GPU automatically when one is present
 (`hostRequirements.gpu: "optional"`) and installs the `ml` extra (torch,
 torchvision, transformers, scikit-learn) needed for fine-tuning Mask2Former
 in Phase 2 — see `docs/INTEGRATION_PLAN.md` §5. No GPU is required for
@@ -35,18 +49,18 @@ Phase 0/1 work; the container just runs CPU-only in that case.
 Open the repo in VS Code and choose **Dev Containers: Reopen in Container**,
 or run `devcontainer up` from the [Dev Containers CLI](https://github.com/devcontainers/cli).
 On first build, `.devcontainer/post-create.sh` installs the project
-(`pip install -e ".[dev,ml]"`) and prints whether a GPU is visible.
+(`uv sync --all-extras`, from `uv.lock`) and prints whether a GPU is visible.
 
 ### Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Fetching historic imagery for an area of interest
 
 ```bash
-python scripts/fetch_historic_imagery.py \
+uv run python scripts/fetch_historic_imagery.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output-dir data/raw/dpw_imagery
 ```
@@ -113,7 +127,7 @@ AOI at a fine `--level` can mean fetching thousands of tiles.
 ### Fetching CSJ Streets for an area of interest
 
 ```bash
-python scripts/fetch_csj_streets.py \
+uv run python scripts/fetch_csj_streets.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output data/raw/csj_streets/downtown.geojson
 ```
@@ -140,7 +154,7 @@ per-request query (no local download/cache, unlike the Valley Water
 approach this replaced).
 
 ```bash
-python scripts/fetch_lidar_elevation.py \
+uv run python scripts/fetch_lidar_elevation.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output data/raw/lidar/downtown_dem.tif
 ```
@@ -164,16 +178,19 @@ actual bytes separately via its own content-addressed cache, referenced
 from git only through `dvc.yaml`/`dvc.lock`.
 
 ```bash
-pip install -e ".[dev,dvc]"
-dvc repro          # (re)run any stage whose script/deps/params changed
-dvc dag             # show the pipeline graph
-dvc push / dvc pull # sync tracked data with the configured remote
+uv sync --extra dev --extra dvc
+uv run dvc repro          # (re)run any stage whose script/deps/params changed
+uv run dvc dag             # show the pipeline graph
+uv run dvc push / uv run dvc pull # sync tracked data with the configured remote
 ```
+
+`--extra dvc` only needs to be passed to `uv sync` once - the venv keeps
+it installed for subsequent `uv run` calls, dvc included.
 
 Stage parameters (AOI bbox, service URLs, output paths) live in
 `params.yaml`, not hardcoded in the scripts - edit a value and `dvc repro`
 reruns only the affected stage(s). For a one-off run without touching the
-file, use `dvc exp run --set-param aoi.min_lon=-121.90 ...`.
+file, use `uv run dvc exp run --set-param aoi.min_lon=-121.90 ...`.
 
 The `.dvc/config` checked in here points the default remote at a
 **local placeholder directory** (`../csnav-dvc-storage`, a sibling of the
@@ -182,7 +199,7 @@ more than one machine/collaborator, or at San Jose-imagery scale, swap it
 for real object storage, e.g.:
 
 ```bash
-dvc remote add -d storage s3://<bucket>/csnav-dvc     # or gs://, azure://, etc.
+uv run dvc remote add -d storage s3://<bucket>/csnav-dvc     # or gs://, azure://, etc.
 ```
 
 (and add the matching extra - `dvc[s3]`, `dvc[gs]`, `dvc[azure]` - to

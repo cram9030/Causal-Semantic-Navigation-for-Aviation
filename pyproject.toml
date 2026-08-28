@@ -38,7 +38,7 @@ ml = [
 # remote extra (dvc[s3]/dvc[gs]/dvc[azure]) is pinned yet - add one once a
 # storage backend is chosen; see README's "Data versioning (DVC)" section.
 dvc = [
-    "dvc>=3.55",
+    "dvc>=3.55,<4",
 ]
 
 [tool.setuptools.packages.find]
