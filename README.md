@@ -60,7 +60,7 @@ uv run pytest
 ### Fetching historic imagery for an area of interest
 
 ```bash
-python scripts/fetch_historic_imagery.py \
+uv run python scripts/fetch_historic_imagery.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output-dir data/raw/dpw_imagery
 ```
@@ -127,7 +127,7 @@ AOI at a fine `--level` can mean fetching thousands of tiles.
 ### Fetching CSJ Streets for an area of interest
 
 ```bash
-python scripts/fetch_csj_streets.py \
+uv run python scripts/fetch_csj_streets.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output data/raw/csj_streets/downtown.geojson
 ```
@@ -154,7 +154,7 @@ per-request query (no local download/cache, unlike the Valley Water
 approach this replaced).
 
 ```bash
-python scripts/fetch_lidar_elevation.py \
+uv run python scripts/fetch_lidar_elevation.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output data/raw/lidar/downtown_dem.tif
 ```
@@ -211,7 +211,7 @@ northern return" is a path through the transition graph, and
 ```bash
 uv sync --extra dev --extra viz
 
-python scripts/visualize_trajectories.py \
+uv run python scripts/visualize_trajectories.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --output-dir out/viz
 ```
@@ -293,7 +293,7 @@ bulges, scaled by the endpoint separation so the shape is scale-free), the
 ### Building the landmark manifests
 
 ```bash
-python scripts/build_manifests.py \
+uv run python scripts/build_manifests.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --output data/manifests/san_jose_downtown_r250.json \
     --map out/viz/manifests.html
