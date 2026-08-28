@@ -122,34 +122,27 @@ queries it restricted to `--bbox` (in EPSG:4326; omit `--bbox` to pull the
 whole layer), and writes the results as a GeoJSON `FeatureCollection`.
 Pass `--layer-url` to skip discovery and query a known layer URL directly.
 
-### Fetching LIDAR elevation
+### Fetching ground elevation
 
-Unlike CSJ Streets and San Jose's own imagery, this dataset isn't served
-through `geo.sanjoseca.gov`'s ArcGIS Server at all - Valley Water publishes
-it as two whole-county ZIP downloads (`--product 1ft`/`5ft`, default `5ft`),
-with no scoped-query support. **The entire chosen product always downloads,
-regardless of `--bbox`** - there's no way to fetch less. `--bbox`/`--output`
-(or `--identify`) only scope what gets read out of the already-downloaded
-local cache (under `--cache-dir`, skipped on a later run unless
-`--overwrite`) into a small GeoTIFF or single value - not what's fetched
-over the network.
+Ground elevation ends up sourced from USGS's 3D Elevation Program (3DEP)
+national elevation ImageServer, not San Jose's own "Imagery & Elevation"
+LIDAR product - that turned out, on inspection of a real download, to be
+contour lines (an Esri File Geodatabase holding one `MultiLineString`
+layer), not a raster DEM. Getting a queryable elevation surface out of
+contour lines needs interpolation (TIN/IDW), which isn't built here; see
+[`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
+that investigation. USGS 3DEP is a fixed, publicly documented federal
+ArcGIS ImageServer - no discovery needed, and every call is a live
+per-request query (no local download/cache, unlike the Valley Water
+approach this replaced).
 
 ```bash
-# one-time prefetch + inventory of what raster source(s) were found (no bbox needed)
-python scripts/fetch_lidar_elevation.py --product 5ft
-
-# read a small AOI out of the (already-downloaded) archive
 python scripts/fetch_lidar_elevation.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output data/raw/lidar/downtown_dem.tif
 ```
 
 Pass `--identify LON LAT` instead of `--bbox`/`--output` to print a single
-point's elevation. See
-[`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
-more, including a real-world caveat: a downloaded archive turns out to
-contain an Esri File Geodatabase (`.gdb`) rather than a plain raster file,
-and reading raster data out of one depends on GDAL being built with Esri's
-proprietary FileGDB SDK - if `ensure_local()`/the script can't find a
-readable raster, the error message names what it *did* find so you can
-check with `gdalinfo` and report back.
+point's elevation - a good first reachability check, since this design
+hasn't been exercised against the live service from this repo's own
+dev/CI environment (it can't reach `elevation.nationalmap.gov` either).

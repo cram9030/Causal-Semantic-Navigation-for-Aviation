@@ -12,9 +12,9 @@
 |---|---|---|---|
 | `DPW_ImageryCached2025` | High-res aerial imagery (~1.9 cm/px at native zoom) | ArcGIS cached tile service (WMTS-compatible), EPSG:3857 native | Ground-truth imagery for Mask2Former training + runtime observation frames |
 | CSJ `Streets` | Road centerlines with width/lane attributes, refreshed weekly | ArcGIS Hub dataset (FeatureServer / GeoJSON export) | Replaces OSMnx as the road-network prior; also the source for buffer widths in label rasterization |
-| San Jose Imagery & Elevation (LIDAR) | Ground elevation / contour data | Static whole-county ZIP download (Valley Water, `gis.valleywater.org`) — **not** an ArcGIS service, despite living under the same "Imagery & Elevation" heading as the DPW imagery above; see `docs/phase0_csj_streets_lidar.md` | Altitude correction — converts GPS-derived height to AGL, and supports FOV occlusion modeling (buildings/terrain blocking a road from view at low altitude) |
+| USGS 3DEP `3DEPElevation` | Ground elevation (national seamless DEM mosaic) | Live ArcGIS ImageServer, `elevation.nationalmap.gov` — **not** San Jose's own data; San Jose's "Imagery & Elevation" LIDAR product (Valley Water) turned out to be contour lines, not a raster DEM, on inspection of a real download — see `docs/phase0_csj_streets_lidar.md` | Altitude correction — converts GPS-derived height to AGL, and supports FOV occlusion modeling (buildings/terrain blocking a road from view at low altitude) |
 
-**Reprojection note:** the imagery service is EPSG:3857 (Web Mercator), a direct, datum-free projection of WGS84 — reproject at tile-fetch time, no datum transform needed. Streets exports typically support requesting output directly in EPSG:4326 via ArcGIS FeatureServer. The LIDAR archives' native CRS is read from the downloaded rasters themselves at extract/read time (commonly a state-plane or UTM CRS for this kind of county GIS product, not WGS84) rather than assumed.
+**Reprojection note:** the imagery service is EPSG:3857 (Web Mercator), a direct, datum-free projection of WGS84 — reproject at tile-fetch time, no datum transform needed. Streets exports typically support requesting output directly in EPSG:4326 via ArcGIS FeatureServer. The USGS 3DEP ImageServer also reprojects server-side (`bboxSR`/`imageSR`/`sr` = 4326), so no client-side warp is needed for elevation either.
 
 ---
 
@@ -168,12 +168,14 @@ causal-semantic-nav/
 San Jose-specific ArcGIS Server clients that share one set of
 REST-catalog/model/projection utilities, so in `src/csnav/` they live
 together as one installable package rather than split under a separate
-`data/acquisition/` tree. The LIDAR elevation client sits alongside that
-package rather than inside it, since — despite being grouped with imagery
-under San Jose's own "Imagery & Elevation" heading — it turns out **not**
-to be an ArcGIS service at all: it's two static, whole-county ZIP downloads
-hosted by Valley Water, so it has nothing to discover and no REST catalog
-to share:
+`data/acquisition/` tree. The ground-elevation client sits alongside that
+package rather than inside it: it turned out San Jose's own "Imagery &
+Elevation" LIDAR product (Valley Water) is contour lines, not a raster DEM
+(confirmed against a real download — see `docs/phase0_csj_streets_lidar.md`),
+so ground elevation is instead sourced from USGS 3DEP's national elevation
+ImageServer — a different provider entirely, with nothing to discover (a
+fixed, documented federal endpoint) and no `geo.sanjoseca.gov` catalog to
+share:
 
 ```
 src/csnav/data/
@@ -187,8 +189,8 @@ src/csnav/data/
 │   ├── client.py         # ArcGISTileClient: imagery via WMTS / /tile / /export
 │   ├── reproject.py       # warp fetched imagery tiles from EPSG:3857 to EPSG:4326 (rasterio)
 │   └── streets.py          # CSJStreetsClient: paginated /query against the Streets layer, GeoJSON in EPSG:4326
-└── lidar.py                  # LidarElevationClient: download/extract Valley Water's whole-county
-                                # ZIP once, then local windowed reads (read_window/identify), EPSG:4326
+└── lidar.py                  # LidarElevationClient: live queries against USGS 3DEP's ImageServer
+                                # (read_window/identify), EPSG:4326 - no local cache, no discovery
 ```
 
 See `docs/phase0_arcgis_tile_client.md` and `docs/phase0_csj_streets_lidar.md`
@@ -219,8 +221,7 @@ class CSJStreetsClient {
   +query(bbox, where) List~StreetSegment~
 }
 class LidarElevationClient {
-  +ensure_local(overwrite) List~Path~
-  +read_window(bbox) ReprojectedTile
+  +read_window(bbox, width, height) ReprojectedTile
   +identify(lon, lat) float
 }
 class GroundTruthBuilder {

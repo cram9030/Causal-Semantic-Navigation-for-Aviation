@@ -6,11 +6,12 @@ per `docs/INTEGRATION_PLAN.md` §2:
 - **CSJ `Streets`** - road centerlines with width/lane attributes, the
   Phase 1 manifest builder's source for candidate landmark geometry (§3.3)
   and, later, buffer widths for ground-truth label rasterization.
-- **San Jose's Imagery & Elevation LIDAR product** - ground elevation, used
-  for AGL correction and FOV occlusion modeling (§2), not just visualization.
-  Despite the name, this one turns out **not** to be an ArcGIS service at
-  all - see "LIDAR: a static download, not an ArcGIS service" below - so it
-  gets a different module (`csnav.data.lidar`, not `csnav.data.arcgis`) and a
+- **Ground elevation**, used for AGL correction and FOV occlusion modeling
+  (§2), not just visualization. San Jose's own "Imagery & Elevation" LIDAR
+  product (Valley Water) turned out, on inspection, not to serve this need -
+  see "Ground elevation: San Jose's LIDAR product turned out to be contour
+  lines" below - so this ended up sourced from USGS 3DEP instead, via a
+  different module (`csnav.data.lidar`, not `csnav.data.arcgis`) and a
   different design than everything else in this doc.
 
 ## Why discovery instead of a hardcoded service/layer name
@@ -51,74 +52,73 @@ skip discovery entirely once the real endpoint is known for a given
 environment, since a live discovery request isn't always possible (e.g.
 sandboxed/offline dev).
 
-## LIDAR: a static download, not an ArcGIS service
+## Ground elevation: San Jose's LIDAR product turned out to be contour lines
 
-The "discover it, don't hardcode it" approach above assumes the dataset is
-actually served through `geo.sanjoseca.gov`'s ArcGIS catalog. San Jose's
-LIDAR elevation product isn't: it turns out to be published by Valley Water
-(Santa Clara Valley Water District) as two static, whole-county ZIP
-downloads, with no ArcGIS Server, catalog, or per-request query endpoint in
-front of them at all -
+Two earlier versions of this client tried to source ground elevation from
+San Jose's own "Imagery & Elevation" LIDAR product, and both were wrong
+about what that product actually *is*:
+
+1. First attempt: assumed it was an ArcGIS `ImageServer` on
+   `geo.sanjoseca.gov`, discovered the same way `Streets`/imagery are. Wrong
+   - no such service exists in that catalog.
+2. Second attempt: it's actually published by Valley Water (Santa Clara
+   Valley Water District) as two static, whole-county ZIP downloads with no
+   ArcGIS Server or query endpoint at all -
+   `https://gis.valleywater.org/Download/LiDAR{1,5}FT.zip` - and this
+   client downloaded + extracted one, assuming the archive held a plain
+   raster file. Also wrong: a real `LiDAR5FT.zip` extracts to an Esri File
+   Geodatabase (`LiDAR5FT.gdb/`) holding exactly one layer,
+   ```
+   $ ogrinfo -so LiDAR5FT.gdb
+   Layer: LiDAR5FT (Multi Line String)
+   ```
+   confirmed (via `gdalinfo` too, not just `rasterio`'s bundled GDAL) to
+   have no raster/mosaic dataset inside it anywhere. It's **contour lines**
+   (matching the accompanying `5ft_contours.txt`'s own FGDC metadata title,
+   "LiDAR Contour Shapefile Grid") - `docs/INTEGRATION_PLAN.md`'s original
+   data-source table already hedged this ("Ground elevation / **contour
+   data**"), which earlier revisions of this client didn't take seriously
+   enough.
+
+Getting an elevation *surface* value at an arbitrary `(lon, lat)` out of
+contour lines needs interpolation (TIN, IDW, ...) - real, unbuilt work with
+real accuracy tradeoffs for the 200-4000 ft AGL operating envelope this
+project targets, and a new vector-geometry dependency this codebase doesn't
+otherwise need. Rather than build that silently, this was a real decision
+point, not a design detail - see the project owner's call below.
+
+## Ground elevation, actually: USGS 3DEP
+
+The chosen path is to source ground elevation from USGS's 3D Elevation
+Program (3DEP) national elevation mosaic instead of San Jose's own data -
+a live ArcGIS ImageServer USGS maintains specifically for this kind of
+programmatic per-AOI/per-point access:
 
 ```
-https://gis.valleywater.org/Download/LiDAR1FT.zip   (1 ft/px)
-https://gis.valleywater.org/Download/LiDAR5FT.zip   (5 ft/px)
+https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer
 ```
 
-(An earlier version of this client tried to *discover* an ArcGIS
-`ImageServer` for this product, the way `Streets`/imagery are discovered -
-that was the wrong model entirely: there's nothing to discover when the URL
-is fixed and already known. `csnav.data.lidar` replaces that attempt.)
+Unlike `geo.sanjoseca.gov`'s catalog, there's no discovery step here - it's
+a fixed, publicly documented federal endpoint, not something that moves
+around inside a generic catalog folder the way `Streets` does. And unlike
+the Valley Water archive, there's no local download/extract/cache step
+either: `LidarElevationClient.read_window(bbox)`/`identify(lon, lat)` are
+live per-request queries against `/exportImage`/`/identify`, requesting
+output directly in EPSG:4326 (`bboxSR`/`imageSR`/`sr`) so the service
+reprojects server-side - the same "the source reprojects, we don't need
+`rasterio.warp`" shape `CSJStreetsClient`'s `outSR=4326` already uses, and
+architecturally close to what the very first (San Jose ImageServer) attempt
+above looked like - just pointed at a real, verified endpoint instead of a
+guessed one.
 
-Because there's no bounding-box query support at the source, "for the AOI"
-scoping happens client-side, after the fact - and it only ever scopes a
-*read*, never the *fetch*: **the entire chosen whole-county product always
-downloads**, whether or not a caller ever asks for a `bbox`. There is no way
-to fetch less; Valley Water doesn't offer one. `LidarElevationClient`
-downloads + extracts the product once (cached under a `cache_dir`, skipped
-on a later call unless `overwrite=True` - these are large, whole-county
-archives, worth caching), and every subsequent `read_window(bbox)`/
-`identify(lon, lat)` call is a local read against whatever raster(s) the
-extracted archive contains, via `rasterio` - no live network call per query,
-but also no reduction in what was already downloaded. `--bbox` on
-`fetch_lidar_elevation.py` exists to keep the *output* file small (an AOI
-GeoTIFF, not the whole county's worth of pixels), not to keep the *download*
-small; running the script with neither `--bbox` nor `--identify` still
-triggers the (one-time) download and just reports the raster source(s)
-found, for exactly this reason - there's nothing left to scope without one
-of those two.
-
-The source raster's CRS is read from the file itself (not assumed), and
-`read_window`/`identify` reproject to EPSG:4326 on read if it isn't already,
-the same "never assume a source is already in EPSG:4326" rule the rest of
-this codebase follows (`CLAUDE.md` §2). If a raster source turns out to be
-many tiles rather than one seamless raster, `read_window` mosaics whichever
-tiles intersect `bbox` via `rasterio.merge.merge` before reprojecting.
-
-**What's actually inside the archive, confirmed against a real download:**
-this codebase's own dev/CI environment can't reach `gis.valleywater.org`, so
-the design above was originally written assuming a plain raster file
-(`.tif`/`.img`/etc.) straight in the ZIP - wrong. A real `LiDAR5FT.zip`
-extracts to an Esri **File Geodatabase** (`LiDAR5FT.gdb/`) plus a
-`5ft_contours.txt`, not a bare raster file. Reading raster/mosaic data out
-of a File Geodatabase with open-source GDAL is version/build-dependent - it
-normally needs Esri's proprietary FileGDB SDK compiled in (this repo's own
-sandbox has neither the `FileGDB` nor even the vector-only `OpenFileGDB`
-GDAL driver registered, so it can't be tested here at all). `discover_rasters()`
-now also looks inside any `.gdb` directory found under the extracted archive
-and lists its raster subdatasets (`list_gdb_raster_subdatasets`, via
-`rasterio.open(gdb_path).subdatasets`) - so this *should* work automatically
-in an environment whose GDAL build supports it, without needing anything
-further. If it doesn't - `ensure_local()` raises `LidarElevationError` with
-a message naming the `.gdb` path(s) found and every other file extension
-present (e.g. `.txt`) - that error message is the signal to check what GDAL
-actually reports for that `.gdb` (`gdalinfo path/to/LiDAR5FT.gdb`, or `python
--c "import rasterio; ...` per the error text) and, if it turns out the
-geodatabase holds only vector contour lines rather than a raster/mosaic
-dataset, revisit this design entirely - a queryable elevation *surface* from
-contour *lines* needs interpolation (TIN, IDW, etc.), which is a materially
-different and larger piece of work than a raster windowed read, not
-implemented here.
+This design is confirmed reachable and documented (via web search - see the
+USGS technical announcement for the 3DEPElevation service), but not tested
+end-to-end from this codebase's own sandbox: outbound access to
+`elevation.nationalmap.gov` is blocked there too, the same as
+`geo.sanjoseca.gov` and `gis.valleywater.org` were. Run
+`python scripts/fetch_lidar_elevation.py --identify <lon> <lat>` as a first
+smoke test in a real environment before relying on `read_window` for
+anything larger.
 
 ## Module layout
 
@@ -127,7 +127,7 @@ src/csnav/data/
 ├── arcgis/
 │   ├── catalog.py    # + discover_services() (generic) and find_layer() (sublayer-by-name resolution)
 │   └── streets.py     # CSJStreetsClient: paginated /query against one Streets layer, GeoJSON in EPSG:4326
-└── lidar.py             # LidarElevationClient: download/extract Valley Water's ZIP, then local windowed reads
+└── lidar.py             # LidarElevationClient: live USGS 3DEP ImageServer queries (read_window/identify)
 ```
 
 `streets.py` sits alongside the existing tile client (`client.py`) under
@@ -162,30 +162,18 @@ how this maps onto the originally-sketched module layout.
 
 ## `LidarElevationClient`
 
-- `ensure_local(overwrite=False) -> list[Path | str]` - download
-  (`download_archive`, streamed with a `tqdm` progress bar, resumable-skip if
-  the archive is already on disk) + extract (`extract_archive`) the chosen
-  `product` (`"1ft"` or `"5ft"`) - **always the whole archive**, regardless
-  of any `bbox` a caller might use afterwards; there is no scoped-fetch
-  option at the source. Returns the raster *sources* found via
-  `discover_rasters()`: plain files with a recognized extension
-  (`RASTER_EXTENSIONS`), plus, for each `.gdb` directory found
-  (`find_gdb_dirs`), any raster subdataset URIs GDAL reports inside it
-  (`list_gdb_raster_subdatasets` - see the File Geodatabase caveat above).
-  Called automatically by `read_window`/`identify` on first use; call it
-  explicitly first to control when the (potentially large) download happens,
-  or to just prefetch + inspect what was found without reading anything.
-- `read_window(bbox) -> ReprojectedTile` - the AOI raster covering `bbox`
-  (must be EPSG:4326), mosaicked from whichever raster source(s) intersect
-  it and reprojected to EPSG:4326 if the source CRS differs. Returns a
-  `ReprojectedTile` (reused from `arcgis/reproject.py` - same
-  data/transform/crs/`to_geotiff()` shape).
-- `identify(lon, lat) -> float | None` - single-point elevation via a direct
-  1x1-pixel index-and-read against the source raster (not a tiny
-  `read_window` bbox - a bbox epsilon small enough to read as "a point" can
-  still be narrower than this DEM's own pixel size, which would make
-  `rasterio.merge.merge` round the output window to zero pixels). `None`
-  where no raster source covers the point, or the pixel is nodata.
+- `identify(lon, lat) -> float | None` - single-point elevation via the
+  ImageServer `/identify` operation; `None` on `NoData`.
+- `read_window(bbox, width=512, height=512, pixel_type="F32") -> ReprojectedTile`
+  - AOI raster pull via `/exportImage`, requesting `bboxSR=imageSR=4326`
+  directly. Returns a `ReprojectedTile` (reused from `arcgis/reproject.py` -
+  same data/transform/crs/`to_geotiff()` shape), with its transform built
+  from the *requested* bbox/size rather than trusted from whatever
+  georeferencing the returned TIFF embeds - the same "always supply our own
+  transform" approach `reproject_tile_to_4326` uses for imagery tiles.
+- `get_metadata()` - the service's own reported extent/pixel size/pixel
+  type, for a lightweight reachability check.
+- No `cache_dir`/download step - every call is live.
 
 ## Running the tests
 
@@ -196,6 +184,9 @@ pytest tests/data/arcgis/test_streets.py tests/data/arcgis/test_catalog.py tests
 ```
 
 All tests mock HTTP responses with `responses`; none of them make live
-network calls, since neither the exact CSJ Streets layer location nor the
-Valley Water LIDAR archives' internal layout have been confirmed against
-the live sources from this codebase's own dev/CI environment.
+network calls. The exact CSJ Streets layer location was confirmed against
+the live catalog (see above); the USGS 3DEP elevation service's URL and
+endpoints were confirmed via web search/documentation but not by an actual
+request from this codebase's own sandbox, which can't reach
+`elevation.nationalmap.gov` either - see "Ground elevation, actually: USGS
+3DEP" above.
