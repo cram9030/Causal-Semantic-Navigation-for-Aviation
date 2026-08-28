@@ -130,17 +130,17 @@ python scripts/fetch_lidar_elevation.py \
     --output data/raw/lidar/downtown_dem.tif
 ```
 
-Resolves San Jose's Imagery & Elevation LIDAR `ImageServer` by name, exports
-a georeferenced elevation raster over `--bbox` (EPSG:4326 throughout - the
-service reprojects server-side), and writes it as a GeoTIFF. Pass
-`--identify LON LAT` instead of `--bbox`/`--output` to print a single point's
-elevation as a quick reachability check, or `--service-url` to skip
-discovery and use a known service URL directly.
-
-The default `--name-contains "Elevation"` is unverified (this repo's own
-dev/CI environment can't reach `geo.sanjoseca.gov`) - if it matches nothing,
-the script lists every other `ImageServer` it does find under `--root` so
-you can pick the right one and rerun with `--service-url` or a different
-`--name-contains`. See
+Unlike CSJ Streets and San Jose's own imagery, this dataset isn't served
+through `geo.sanjoseca.gov`'s ArcGIS Server at all - Valley Water publishes
+it as two whole-county ZIP downloads (`--product 1ft`/`5ft`, default `5ft`).
+This downloads + extracts the chosen product once (cached under
+`--cache-dir`, skipped on a later run unless `--overwrite` - these are
+large archives, not something to re-fetch per query), then reads just the
+window covering `--bbox` out of whichever raster(s) the archive contains,
+mosaicking/reprojecting to EPSG:4326 as needed, and writes it as a GeoTIFF.
+Pass `--identify LON LAT` instead of `--bbox`/`--output` to print a single
+point's elevation as a quick check. See
 [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
-more.
+more, including the caveat that the archives' internal layout is unverified
+from this repo's own dev/CI environment (which can't reach
+`gis.valleywater.org` either).

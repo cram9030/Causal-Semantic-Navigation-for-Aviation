@@ -1,4 +1,6 @@
+import io
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -6,114 +8,104 @@ import pytest
 import rasterio
 import responses
 from rasterio.io import MemoryFile
+from rasterio.transform import from_bounds
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import fetch_lidar_elevation as fle  # noqa: E402
+from csnav.data.arcgis.models import Extent  # noqa: E402
+from csnav.data.arcgis.projections import lonlat_to_3857  # noqa: E402
+from csnav.data.lidar import LIDAR_PRODUCT_URLS  # noqa: E402
 
-BASE = "https://example.test/server/rest/services"
-SERVICE_URL = f"{BASE}/Imagery/DPW_Elevation2025/ImageServer"
-
-
-def _args(**overrides):
-    defaults = dict(base_url=BASE, name_contains="Elevation", root="", service_url=None)
-    defaults.update(overrides)
-    return type("Args", (), defaults)()
+AOI_4326 = Extent(xmin=-121.90, ymin=37.30, xmax=-121.89, ymax=37.31, wkid=4326)
+ELEVATION_VALUE = 42.5
 
 
-def _tiny_tiff_bytes() -> bytes:
-    data = np.array([[10.0, 11.0], [12.0, 13.0]], dtype="float32")
+def _tiff_bytes_3857(bbox_4326: Extent, width: int = 20, height: int = 20, value: float = ELEVATION_VALUE) -> bytes:
+    xmin, ymin = lonlat_to_3857(bbox_4326.xmin, bbox_4326.ymin)
+    xmax, ymax = lonlat_to_3857(bbox_4326.xmax, bbox_4326.ymax)
+    transform = from_bounds(xmin, ymin, xmax, ymax, width, height)
+    data = np.full((height, width), value, dtype="float32")
     with MemoryFile() as memfile:
-        with memfile.open(driver="GTiff", width=2, height=2, count=1, dtype="float32") as dst:
+        with memfile.open(
+            driver="GTiff", width=width, height=height, count=1, dtype="float32",
+            crs="EPSG:3857", transform=transform,
+        ) as dst:
             dst.write(data, 1)
         return memfile.read()
 
 
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in members.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def _run_main(argv, monkeypatch):
+    monkeypatch.setattr(sys, "argv", argv)
+    fle.main()
+
+
 @responses.activate
-def test_resolve_service_url_uses_catalog_discovery():
+def test_main_writes_geotiff_for_bbox(tmp_path, monkeypatch, capsys):
     responses.add(
-        responses.GET, BASE,
-        json={
-            "folders": [],
-            "services": [{"name": "Imagery/DPW_Elevation2025", "type": "ImageServer"}],
-        },
+        responses.GET, LIDAR_PRODUCT_URLS["5ft"],
+        body=_zip_bytes({"dem.tif": _tiff_bytes_3857(AOI_4326)}), status=200,
     )
-
-    service_url = fle.resolve_service_url(_args())
-
-    assert service_url == SERVICE_URL
-
-
-def test_resolve_service_url_skips_discovery_when_explicit():
-    args = _args(service_url=SERVICE_URL)
-    assert fle.resolve_service_url(args) == SERVICE_URL
-
-
-@responses.activate
-def test_resolve_service_url_raises_when_no_match(capsys):
-    responses.add(responses.GET, BASE, json={"folders": [], "services": []})
-
-    with pytest.raises(SystemExit):
-        fle.resolve_service_url(_args())
-
-
-@responses.activate
-def test_resolve_service_url_lists_other_image_servers_when_name_filter_matches_none():
-    responses.add(
-        responses.GET, BASE,
-        json={
-            "folders": [],
-            "services": [{"name": "Imagery/DPW_Terrain2025", "type": "ImageServer"}],
-        },
-    )
-
-    with pytest.raises(SystemExit) as exc_info:
-        fle.resolve_service_url(_args())
-
-    assert "DPW_Terrain2025" in str(exc_info.value)
-
-
-@responses.activate
-def test_main_exports_geotiff(tmp_path):
-    responses.add(responses.GET, f"{SERVICE_URL}/exportImage", body=_tiny_tiff_bytes(), content_type="image/tiff")
 
     out_path = tmp_path / "dem.tif"
     argv = [
         "fetch_lidar_elevation.py",
-        "--service-url", SERVICE_URL,
-        "--bbox", "-122.0", "37.2", "-121.8", "37.4",
-        "--width", "2", "--height", "2",
+        "--cache-dir", str(tmp_path / "cache"),
+        "--bbox", str(AOI_4326.xmin), str(AOI_4326.ymin), str(AOI_4326.xmax), str(AOI_4326.ymax),
         "--output", str(out_path),
     ]
-    old_argv = sys.argv
-    sys.argv = argv
-    try:
-        fle.main()
-    finally:
-        sys.argv = old_argv
+    _run_main(argv, monkeypatch)
 
     assert out_path.exists()
     with rasterio.open(out_path) as ds:
         assert ds.crs.to_epsg() == 4326
-        assert ds.read(1)[0, 0] == pytest.approx(10.0)
+        assert np.nanmedian(ds.read(1)) == pytest.approx(ELEVATION_VALUE, abs=0.5)
 
 
 @responses.activate
-def test_main_identify_prints_value(capsys):
-    responses.add(responses.GET, f"{SERVICE_URL}/identify", json={"value": "42.0"})
+def test_main_identify_prints_value(tmp_path, monkeypatch, capsys):
+    responses.add(
+        responses.GET, LIDAR_PRODUCT_URLS["5ft"],
+        body=_zip_bytes({"dem.tif": _tiff_bytes_3857(AOI_4326)}), status=200,
+    )
 
+    center_lon = (AOI_4326.xmin + AOI_4326.xmax) / 2
+    center_lat = (AOI_4326.ymin + AOI_4326.ymax) / 2
     argv = [
         "fetch_lidar_elevation.py",
-        "--service-url", SERVICE_URL,
-        "--identify", "-121.9", "37.3",
+        "--cache-dir", str(tmp_path / "cache"),
+        "--identify", str(center_lon), str(center_lat),
     ]
-    old_argv = sys.argv
-    sys.argv = argv
-    try:
-        fle.main()
-    finally:
-        sys.argv = old_argv
+    _run_main(argv, monkeypatch)
 
     captured = capsys.readouterr()
-    assert captured.out.strip() == "42.0"
+    assert float(captured.out.strip()) == 42.5
+
+
+@responses.activate
+def test_main_second_run_does_not_redownload(tmp_path, monkeypatch):
+    responses.add(
+        responses.GET, LIDAR_PRODUCT_URLS["5ft"],
+        body=_zip_bytes({"dem.tif": _tiff_bytes_3857(AOI_4326)}), status=200,
+    )
+
+    cache_dir = tmp_path / "cache"
+    argv = [
+        "fetch_lidar_elevation.py",
+        "--cache-dir", str(cache_dir),
+        "--identify", "-121.895", "37.305",
+    ]
+    _run_main(argv, monkeypatch)
+    assert len(responses.calls) == 1
+
+    _run_main(argv, monkeypatch)
+    assert len(responses.calls) == 1

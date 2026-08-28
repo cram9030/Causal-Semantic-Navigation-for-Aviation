@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Pull San Jose's Imagery & Elevation LIDAR product for an AOI, in EPSG:4326.
+"""Fetch San Jose's LIDAR-derived elevation product for an AOI, in EPSG:4326.
 
-Phase 0 data collection (see `docs/INTEGRATION_PLAN.md` §5): fetches a
-georeferenced elevation raster over a bounding box from San Jose's LIDAR
-ImageServer, for later use in AGL correction and FOV occlusion modeling
-(`docs/INTEGRATION_PLAN.md` §2) - not just visualization. The service is
-resolved by name via ``ArcGISCatalog.discover_services`` rather than
-hardcoded, for the same reason imagery services are discovered rather than
-assumed (see `docs/phase0_arcgis_tile_client.md`).
-
-Two modes:
-
-* Default: export a raster covering ``--bbox`` and write it as a GeoTIFF.
-* ``--identify LON LAT``: print a single point's elevation and exit, without
-  fetching a raster - useful for a quick reachability/sanity check.
+Phase 0 data collection (see `docs/INTEGRATION_PLAN.md` §5): unlike CSJ
+Streets and San Jose's own imagery, the LIDAR DEM behind San Jose's
+"Imagery & Elevation" data isn't served through `geo.sanjoseca.gov`'s
+ArcGIS Server - Valley Water (Santa Clara Valley Water District) publishes
+it as two static, whole-county ZIP downloads (``--product 1ft``/``5ft``).
+There's nothing to discover here, so this script just downloads + extracts
+the chosen product once (cached under ``--cache-dir``; skipped on a later
+run unless ``--overwrite``), then reads the window covering ``--bbox`` (or a
+tiny window around ``--identify``'s point) out of whichever raster(s) the
+archive contains, mosaicking/reprojecting to EPSG:4326 as needed - see
+`csnav.data.lidar` for details.
 
 Example::
 
@@ -31,89 +29,43 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from csnav.data.arcgis.catalog import ArcGISCatalog, DEFAULT_BASE_URL  # noqa: E402
-from csnav.data.arcgis.elevation import LidarElevationClient, load_elevation_tile  # noqa: E402
 from csnav.data.arcgis.models import Extent  # noqa: E402
+from csnav.data.lidar import LIDAR_PRODUCT_URLS, LidarElevationClient  # noqa: E402
 
 logger = logging.getLogger("fetch_lidar_elevation")
-
-DEFAULT_NAME_CONTAINS = "Elevation"
-
-
-def resolve_service_url(args: argparse.Namespace) -> str:
-    if args.service_url:
-        return args.service_url
-    catalog = ArcGISCatalog(base_url=args.base_url)
-    matches = catalog.discover_services(
-        root=args.root, name_contains=args.name_contains, service_types=("ImageServer",)
-    )
-    if not matches:
-        # Nothing matched the name filter - rather than just failing, list every
-        # ImageServer that *does* exist under this root so the caller (who has
-        # live access to the catalog, unlike this codebase's own dev/test
-        # environment) can identify the right one by eye and either retry with
-        # a different --name-contains or pass --service-url directly.
-        all_image_servers = catalog.discover_services(
-            root=args.root, name_contains="", service_types=("ImageServer",)
-        )
-        if all_image_servers:
-            listing = "\n".join(f"  - {ref.full_name}" for ref in all_image_servers)
-            raise SystemExit(
-                f"no ImageServer matching {args.name_contains!r} found under "
-                f"{args.root or '(whole catalog)'!r}, but {len(all_image_servers)} other "
-                f"ImageServer(s) exist there:\n{listing}\n"
-                "Pick one with --service-url, or retry with a different --name-contains."
-            )
-        raise SystemExit(
-            f"no ImageServer at all found under {args.root or '(whole catalog)'!r} - the LIDAR "
-            "elevation product may not be published as a live ArcGIS ImageServer in this catalog "
-            "(San Jose's 'Imagery and Elevation' Hub page may only offer point-cloud/download "
-            "content there instead of a queryable raster service). Pass --service-url directly "
-            "if you already know the endpoint, or --root to search a different folder."
-        )
-    if len(matches) > 1:
-        logger.warning(
-            "%d ImageServer(s) matched %r; using the first: %s",
-            len(matches), args.name_contains, matches[0].full_name,
-        )
-    service_url = catalog.service_rest_url(matches[0])
-    logger.info("resolved elevation service: %s", service_url)
-    return service_url
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="ArcGIS REST services directory root")
     parser.add_argument(
-        "--name-contains", default=DEFAULT_NAME_CONTAINS,
-        help="substring used to find the LIDAR elevation ImageServer",
+        "--product", choices=sorted(LIDAR_PRODUCT_URLS), default="5ft",
+        help="which whole-county DEM resolution to use (default: 5ft; 1ft is a much larger download)",
     )
     parser.add_argument(
-        "--root", default="",
-        help="catalog folder to search under (default: the whole services directory)",
+        "--cache-dir", type=Path, default=Path("data/raw/lidar_archive"),
+        help="where the downloaded archive and extracted rasters are cached across runs",
     )
     parser.add_argument(
-        "--service-url", default=None, help="skip discovery and use this ImageServer URL directly"
+        "--overwrite", action="store_true",
+        help="re-download/re-extract even if already cached under --cache-dir",
     )
     parser.add_argument(
-        "--bbox", type=float, nargs=4, metavar=("MINLON", "MINLAT", "MAXLON", "MAXLAT"),
-        help="EPSG:4326 envelope to export (required unless --identify is given)",
+        "--bbox", type=float, nargs=4, default=None, metavar=("MINLON", "MINLAT", "MAXLON", "MAXLAT"),
+        help="EPSG:4326 envelope to read (required unless --identify is given)",
     )
-    parser.add_argument("--width", type=int, default=1024, help="output raster width in pixels")
-    parser.add_argument("--height", type=int, default=1024, help="output raster height in pixels")
-    parser.add_argument("--pixel-type", default="F32", help="ArcGIS exportImage pixel type (default: F32)")
     parser.add_argument("--output", type=Path, help="output GeoTIFF path (required unless --identify is given)")
     parser.add_argument(
         "--identify", type=float, nargs=2, default=None, metavar=("LON", "LAT"),
-        help="print the elevation at a single point instead of exporting a raster",
+        help="print the elevation at a single point instead of reading a window",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s")
 
-    service_url = resolve_service_url(args)
-    client = LidarElevationClient(service_url)
+    client = LidarElevationClient(cache_dir=args.cache_dir, product=args.product)
+    raster_paths = client.ensure_local(overwrite=args.overwrite)
+    logger.info("%d raster file(s) available under %s", len(raster_paths), client.extract_dir)
 
     if args.identify:
         lon, lat = args.identify
@@ -125,12 +77,11 @@ def main() -> None:
         raise SystemExit("--bbox and --output are required unless --identify is given")
 
     extent = Extent(xmin=args.bbox[0], ymin=args.bbox[1], xmax=args.bbox[2], ymax=args.bbox[3], wkid=4326)
-    image_bytes = client.export_elevation(extent, width=args.width, height=args.height, pixel_type=args.pixel_type)
-    tile = load_elevation_tile(image_bytes, extent, width=args.width, height=args.height)
+    tile = client.read_window(extent)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     tile.to_geotiff(args.output)
-    logger.info("wrote %s (%dx%d)", args.output, args.width, args.height)
+    logger.info("wrote %s (%dx%d)", args.output, tile.width, tile.height)
 
 
 if __name__ == "__main__":

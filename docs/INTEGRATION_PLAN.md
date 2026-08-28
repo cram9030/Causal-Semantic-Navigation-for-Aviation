@@ -12,9 +12,9 @@
 |---|---|---|---|
 | `DPW_ImageryCached2025` | High-res aerial imagery (~1.9 cm/px at native zoom) | ArcGIS cached tile service (WMTS-compatible), EPSG:3857 native | Ground-truth imagery for Mask2Former training + runtime observation frames |
 | CSJ `Streets` | Road centerlines with width/lane attributes, refreshed weekly | ArcGIS Hub dataset (FeatureServer / GeoJSON export) | Replaces OSMnx as the road-network prior; also the source for buffer widths in label rasterization |
-| San Jose Imagery & Elevation (LIDAR) | Ground elevation / contour data | ArcGIS Hub, imagery & elevation category | Altitude correction — converts GPS-derived height to AGL, and supports FOV occlusion modeling (buildings/terrain blocking a road from view at low altitude) |
+| San Jose Imagery & Elevation (LIDAR) | Ground elevation / contour data | Static whole-county ZIP download (Valley Water, `gis.valleywater.org`) — **not** an ArcGIS service, despite living under the same "Imagery & Elevation" heading as the DPW imagery above; see `docs/phase0_csj_streets_lidar.md` | Altitude correction — converts GPS-derived height to AGL, and supports FOV occlusion modeling (buildings/terrain blocking a road from view at low altitude) |
 
-**Reprojection note:** the imagery service is EPSG:3857 (Web Mercator), a direct, datum-free projection of WGS84 — reproject at tile-fetch time, no datum transform needed. Streets and elevation layers should be checked individually for their native CRS at export time, but ArcGIS FeatureServer/Hub exports typically support requesting output directly in EPSG:4326.
+**Reprojection note:** the imagery service is EPSG:3857 (Web Mercator), a direct, datum-free projection of WGS84 — reproject at tile-fetch time, no datum transform needed. Streets exports typically support requesting output directly in EPSG:4326 via ArcGIS FeatureServer. The LIDAR archives' native CRS is read from the downloaded rasters themselves at extract/read time (commonly a state-plane or UTM CRS for this kind of county GIS product, not WGS84) rather than assumed.
 
 ---
 
@@ -164,30 +164,37 @@ causal-semantic-nav/
     └── compare_metrics.py
 ```
 
-**Implementation note (Phase 0):** the imagery, CSJ Streets, and LIDAR
-elevation clients are San Jose-specific ArcGIS Server clients that share one
-set of REST-catalog/model/projection utilities, so in `src/csnav/` they live
+**Implementation note (Phase 0):** the imagery and CSJ Streets clients are
+San Jose-specific ArcGIS Server clients that share one set of
+REST-catalog/model/projection utilities, so in `src/csnav/` they live
 together as one installable package rather than split under a separate
-`data/acquisition/` tree:
+`data/acquisition/` tree. The LIDAR elevation client sits alongside that
+package rather than inside it, since — despite being grouped with imagery
+under San Jose's own "Imagery & Elevation" heading — it turns out **not**
+to be an ArcGIS service at all: it's two static, whole-county ZIP downloads
+hosted by Valley Water, so it has nothing to discover and no REST catalog
+to share:
 
 ```
-src/csnav/data/arcgis/
-├── models.py        # ServiceRef, TileInfo, LevelOfDetail, Extent, ServiceMetadata
-├── projections.py   # EPSG:4326 <-> EPSG:3857 helpers (pyproj)
-├── catalog.py       # ArcGISCatalog: recursive service discovery (+ find_layer() for
-│                     # datasets published as a sublayer of a shared, generically-named
-│                     # service, e.g. CSJ Streets) - no hardcoded service names
-├── tiles.py         # ArcGIS tileInfo-based tile bounds / row-col-for-extent math
-├── client.py         # ArcGISTileClient: imagery via WMTS / /tile / /export
-├── reproject.py       # warp fetched imagery tiles from EPSG:3857 to EPSG:4326 (rasterio)
-├── streets.py          # CSJStreetsClient: paginated /query against the Streets layer, GeoJSON in EPSG:4326
-└── elevation.py          # LidarElevationClient: point identify() + AOI export via /exportImage, EPSG:4326
+src/csnav/data/
+├── arcgis/
+│   ├── models.py        # ServiceRef, TileInfo, LevelOfDetail, Extent, ServiceMetadata
+│   ├── projections.py   # EPSG:4326 <-> EPSG:3857 helpers (pyproj)
+│   ├── catalog.py       # ArcGISCatalog: recursive service discovery (+ find_layer() for
+│   │                     # datasets published as a sublayer of a shared, generically-named
+│   │                     # service, e.g. CSJ Streets) - no hardcoded service names
+│   ├── tiles.py         # ArcGIS tileInfo-based tile bounds / row-col-for-extent math
+│   ├── client.py         # ArcGISTileClient: imagery via WMTS / /tile / /export
+│   ├── reproject.py       # warp fetched imagery tiles from EPSG:3857 to EPSG:4326 (rasterio)
+│   └── streets.py          # CSJStreetsClient: paginated /query against the Streets layer, GeoJSON in EPSG:4326
+└── lidar.py                  # LidarElevationClient: download/extract Valley Water's whole-county
+                                # ZIP once, then local windowed reads (read_window/identify), EPSG:4326
 ```
 
 See `docs/phase0_arcgis_tile_client.md` and `docs/phase0_csj_streets_lidar.md`
-for the rationale behind this layout and the discovery-over-hardcoding
-approach both take. `data/ground_truth/` and everything below it in the
-aspirational tree remain unimplemented (Phase 1+).
+for the rationale behind this layout, the discovery-over-hardcoding approach
+the ArcGIS clients take, and why the LIDAR client doesn't. `data/ground_truth/`
+and everything below it in the aspirational tree remain unimplemented (Phase 1+).
 
 ---
 
@@ -212,8 +219,9 @@ class CSJStreetsClient {
   +query(bbox, where) List~StreetSegment~
 }
 class LidarElevationClient {
+  +ensure_local(overwrite) List~Path~
+  +read_window(bbox) ReprojectedTile
   +identify(lon, lat) float
-  +export_elevation(extent, width, height) bytes
 }
 class GroundTruthBuilder {
   +rasterize(streets, tile) PanopticLabel
@@ -301,7 +309,6 @@ GroundTruthBuilder ..> ArcGISTileClient : uses
 GroundTruthBuilder ..> LocalFrame : uses
 ArcGISCatalog ..> ArcGISTileClient : resolves service URL for
 ArcGISCatalog ..> CSJStreetsClient : resolves layer URL for
-ArcGISCatalog ..> LidarElevationClient : resolves service URL for
 Mask2FormerModel ..> GroundTruthBuilder : trained on
 Mask2FormerModel --> PanopticResult : produces
 Mask2FormerModel --> ConfusionMatrix : produces

@@ -8,6 +8,10 @@ per `docs/INTEGRATION_PLAN.md` §2:
   and, later, buffer widths for ground-truth label rasterization.
 - **San Jose's Imagery & Elevation LIDAR product** - ground elevation, used
   for AGL correction and FOV occlusion modeling (§2), not just visualization.
+  Despite the name, this one turns out **not** to be an ArcGIS service at
+  all - see "LIDAR: a static download, not an ArcGIS service" below - so it
+  gets a different module (`csnav.data.lidar`, not `csnav.data.arcgis`) and a
+  different design than everything else in this doc.
 
 ## Why discovery instead of a hardcoded service/layer name
 
@@ -37,49 +41,78 @@ Jose's layout has moved `Streets` elsewhere.
 folder that 403/404s when listed is logged and skipped rather than aborting
 the whole walk, since one bad or restricted folder shouldn't hide every
 service elsewhere in the tree (this matters most when searching a wide or
-whole-catalog root, e.g. for `--root ''` above or LIDAR elevation discovery
-below). An ArcGIS *error payload* (a 200 response with an `error` body, as
-opposed to a plain HTTP error) still propagates - that typically means
-something is wrong with the request itself, not just "this folder isn't
-here".
+whole-catalog root, e.g. for `--root ''` above). An ArcGIS *error payload*
+(a 200 response with an `error` body, as opposed to a plain HTTP error)
+still propagates - that typically means something is wrong with the request
+itself, not just "this folder isn't here".
 
-The LIDAR elevation product is expected to be published as its own
-`ImageServer` (unlike `Streets`, no sublayer resolution should be needed -
-just `ArcGISCatalog.discover_services(..., service_types=("ImageServer",))`),
-but its exact name is *not* confirmed the way `Streets`' location is: this
-codebase's own dev/CI environment can't reach `geo.sanjoseca.gov` at all, so
-the `--name-contains "Elevation"` default is a guess, not a verified name.
-When it matches nothing, `fetch_lidar_elevation.py` doesn't just fail - it
-lists every other `ImageServer` that *does* exist under `--root` so you can
-identify the right one by eye from an environment with real catalog access,
-and either retry with a different `--name-contains` or pass `--service-url`
-directly. It's also possible the LIDAR product isn't exposed as a live
-ArcGIS ImageServer at all - San Jose's "Imagery and Elevation" page on its
-ArcGIS Hub portal may only offer point-cloud/download content there instead
-of a queryable raster service, in which case `export_elevation()`/`identify()`
-would need a different transport entirely; the script's error message says
-so if the catalog has no ImageServer under `--root` whatsoever.
+`scripts/fetch_csj_streets.py` also accepts an explicit `--layer-url` to
+skip discovery entirely once the real endpoint is known for a given
+environment, since a live discovery request isn't always possible (e.g.
+sandboxed/offline dev).
 
-Both `scripts/fetch_csj_streets.py` and `scripts/fetch_lidar_elevation.py`
-also accept an explicit `--layer-url`/`--service-url` to skip discovery
-entirely once the real endpoint is known for a given environment, since a
-live discovery request isn't always possible (e.g. sandboxed/offline dev).
+## LIDAR: a static download, not an ArcGIS service
+
+The "discover it, don't hardcode it" approach above assumes the dataset is
+actually served through `geo.sanjoseca.gov`'s ArcGIS catalog. San Jose's
+LIDAR elevation product isn't: it turns out to be published by Valley Water
+(Santa Clara Valley Water District) as two static, whole-county ZIP
+downloads, with no ArcGIS Server, catalog, or per-request query endpoint in
+front of them at all -
+
+```
+https://gis.valleywater.org/Download/LiDAR1FT.zip   (1 ft/px)
+https://gis.valleywater.org/Download/LiDAR5FT.zip   (5 ft/px)
+```
+
+(An earlier version of this client tried to *discover* an ArcGIS
+`ImageServer` for this product, the way `Streets`/imagery are discovered -
+that was the wrong model entirely: there's nothing to discover when the URL
+is fixed and already known. `csnav.data.lidar` replaces that attempt.)
+
+Because there's no bounding-box query support at the source, "for the AOI"
+scoping happens client-side, after the fact: `LidarElevationClient`
+downloads + extracts the chosen whole-county product once (cached under a
+`cache_dir`, skipped on a later call unless `overwrite=True` - these are
+large archives, not something to re-fetch per query), and every subsequent
+`read_window(bbox)`/`identify(lon, lat)` call is a local read against
+whatever raster(s) the archive contains, via `rasterio` - no live network
+call per query. The source raster's CRS is read from the file itself (not
+assumed), and `read_window`/`identify` reproject to EPSG:4326 on read if
+it isn't already, the same "never assume a source is already in EPSG:4326"
+rule the rest of this codebase follows (`CLAUDE.md` §2). If the archive
+turns out to contain many tiled rasters rather than one seamless raster,
+`read_window` mosaics whichever tiles intersect `bbox` via
+`rasterio.merge.merge` before reprojecting.
+
+This design is unverified end-to-end: this codebase's own dev/CI
+environment can't reach `gis.valleywater.org` either, so the archives'
+actual internal layout (one seamless raster vs. many tiles; file format;
+native CRS) is an assumption, not something read from a real download. If
+`ensure_local()`/the script's `--product` run and the archive doesn't
+contain a recognized raster file (`.tif`/`.tiff`/`.img`/`.asc`/`.adf` -
+see `RASTER_EXTENSIONS`), that's the signal this assumption needs revisiting
+against what's actually inside.
 
 ## Module layout
 
 ```
-src/csnav/data/arcgis/
-├── catalog.py     # + discover_services() (generic) and find_layer() (sublayer-by-name resolution)
-├── streets.py      # CSJStreetsClient: paginated /query against one Streets layer, GeoJSON in EPSG:4326
-└── elevation.py      # LidarElevationClient: point identify() + AOI export via /exportImage, EPSG:4326
+src/csnav/data/
+├── arcgis/
+│   ├── catalog.py    # + discover_services() (generic) and find_layer() (sublayer-by-name resolution)
+│   └── streets.py     # CSJStreetsClient: paginated /query against one Streets layer, GeoJSON in EPSG:4326
+└── lidar.py             # LidarElevationClient: download/extract Valley Water's ZIP, then local windowed reads
 ```
 
-`streets.py` and `elevation.py` sit alongside the existing tile client
-(`client.py`) rather than under a separate `data/acquisition/` package -
+`streets.py` sits alongside the existing tile client (`client.py`) under
+`csnav.data.arcgis` rather than a separate `data/acquisition/` package -
 they're all ArcGIS Server clients for the same `geo.sanjoseca.gov` catalog
 and share its models/catalog/projections utilities, so keeping them in one
-package avoids duplicating that plumbing. See `docs/INTEGRATION_PLAN.md` §6
-for how this maps onto the originally-sketched module layout.
+package avoids duplicating that plumbing. `lidar.py` sits outside that
+package instead, since it isn't an ArcGIS client at all - it still reuses
+`arcgis.models.Extent` and `arcgis.reproject.ReprojectedTile` rather than
+duplicating those small shared types. See `docs/INTEGRATION_PLAN.md` §6 for
+how this maps onto the originally-sketched module layout.
 
 ## `CSJStreetsClient`
 
@@ -103,31 +136,33 @@ for how this maps onto the originally-sketched module layout.
 
 ## `LidarElevationClient`
 
-- `identify(lon, lat) -> float | None` - single-point elevation via the
-  ImageServer `/identify` operation; `None` on `NoData`.
-- `export_elevation(extent, width, height, pixel_type="F32") -> bytes` +
-  `load_elevation_tile(...)` - AOI raster pull via `/exportImage`, requesting
-  `bboxSR=imageSR=4326` directly (the service reprojects server-side, unlike
-  the Web Mercator-only cached imagery tiles in `client.py`/`reproject.py`,
-  so no client-side `rasterio.warp` step is needed here). `load_elevation_tile`
-  still builds its own transform from the *requested* extent/width/height
-  rather than trusting whatever georeferencing the returned TIFF embeds -
-  the same "always supply our own transform" approach `reproject_tile_to_4326`
-  uses for imagery tiles.
-- Returns a `ReprojectedTile` (reused from `reproject.py` - same
-  data/transform/crs/`to_geotiff()` shape applies whether or not a CRS warp
-  actually happened).
+- `ensure_local(overwrite=False) -> list[Path]` - download (`download_archive`,
+  streamed with a `tqdm` progress bar, resumable-skip if the archive is
+  already on disk) + extract (`extract_archive`) the chosen `product`
+  (`"1ft"` or `"5ft"`), returning the raster file paths found. Called
+  automatically by `read_window`/`identify` on first use; call it explicitly
+  first to control when the (potentially large) download happens.
+- `read_window(bbox) -> ReprojectedTile` - the AOI raster covering `bbox`
+  (must be EPSG:4326), mosaicked from whichever extracted raster(s)
+  intersect it and reprojected to EPSG:4326 if the source CRS differs.
+  Returns a `ReprojectedTile` (reused from `arcgis/reproject.py` - same
+  data/transform/crs/`to_geotiff()` shape).
+- `identify(lon, lat) -> float | None` - single-point elevation via a direct
+  1x1-pixel index-and-read against the source raster (not a tiny
+  `read_window` bbox - a bbox epsilon small enough to read as "a point" can
+  still be narrower than this DEM's own pixel size, which would make
+  `rasterio.merge.merge` round the output window to zero pixels). `None`
+  where no extracted raster covers the point, or the pixel is nodata.
 
 ## Running the tests
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/data/arcgis/test_streets.py tests/data/arcgis/test_elevation.py \
-       tests/data/arcgis/test_catalog.py \
+pytest tests/data/arcgis/test_streets.py tests/data/arcgis/test_catalog.py tests/data/test_lidar.py \
        tests/scripts/test_fetch_csj_streets.py tests/scripts/test_fetch_lidar_elevation.py
 ```
 
-All tests mock ArcGIS responses with `responses`; none of them make live
-network calls, since the exact CSJ Streets/LIDAR service and layer names
-should be confirmed against the live catalog for a given environment before
-relying on the discovery defaults in a real pull.
+All tests mock HTTP responses with `responses`; none of them make live
+network calls, since neither the exact CSJ Streets layer location nor the
+Valley Water LIDAR archives' internal layout have been confirmed against
+the live sources from this codebase's own dev/CI environment.
