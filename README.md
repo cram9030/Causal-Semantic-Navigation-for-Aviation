@@ -9,6 +9,9 @@ from `geo.sanjoseca.gov`'s ArcGIS Server:
   [`docs/phase0_arcgis_tile_client.md`](docs/phase0_arcgis_tile_client.md).
 - CSJ `Streets` centerlines and the Imagery & Elevation LIDAR product - see
   [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md).
+- The local ENU tangent-plane conversion utilities every downstream metric
+  geometry step builds on - see
+  [`docs/phase0_local_frame.md`](docs/phase0_local_frame.md).
 
 ### Setup
 
@@ -148,3 +151,19 @@ Both paths are confirmed working against the live service: `--identify -121.9
 print a single point's elevation rather than fetching a raster. See
 [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
 the full story of how this data source was chosen.
+
+### Converting between WGS84 and a local ENU tangent plane
+
+```python
+from csnav.geometry.local_frame import LocalFrame
+
+frame = LocalFrame(origin_lat=37.3382, origin_lon=-121.8863)
+
+point = frame.to_enu(lat=37.3562, lon=-121.8663)  # Point(east=..., north=..., up=...) meters
+back = frame.to_wgs84(point.east, point.north, point.up)  # LatLon(lat=..., lon=..., height=...)
+```
+
+Every metric geometry operation (RNP tube containment, street buffers, FOV
+projection) should go through this conversion rather than doing
+distance/area math directly on raw WGS84 degrees - see
+[`docs/phase0_local_frame.md`](docs/phase0_local_frame.md).
