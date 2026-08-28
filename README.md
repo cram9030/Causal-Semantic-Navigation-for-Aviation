@@ -143,6 +143,9 @@ python scripts/fetch_lidar_elevation.py \
 ```
 
 Pass `--identify LON LAT` instead of `--bbox`/`--output` to print a single
-point's elevation - a good first reachability check, since this design
-hasn't been exercised against the live service from this repo's own
-dev/CI environment (it can't reach `elevation.nationalmap.gov` either).
+point's elevation - confirmed working against the live service (e.g.
+`--identify -121.9 37.3` returns `41.5276`). `--bbox`/`read_window` uses a
+different, correctly-documented parameter pair (`bboxSR`/`imageSR`) than
+`identify` does, so it's very likely fine too, but hasn't independently been
+exercised against the live service the way `identify` has - see
+[`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md).

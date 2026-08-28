@@ -111,14 +111,29 @@ architecturally close to what the very first (San Jose ImageServer) attempt
 above looked like - just pointed at a real, verified endpoint instead of a
 guessed one.
 
-This design is confirmed reachable and documented (via web search - see the
-USGS technical announcement for the 3DEPElevation service), but not tested
-end-to-end from this codebase's own sandbox: outbound access to
-`elevation.nationalmap.gov` is blocked there too, the same as
-`geo.sanjoseca.gov` and `gis.valleywater.org` were. Run
-`python scripts/fetch_lidar_elevation.py --identify <lon> <lat>` as a first
-smoke test in a real environment before relying on `read_window` for
-anything larger.
+This codebase's own sandbox can't reach `elevation.nationalmap.gov` (the
+same as `geo.sanjoseca.gov` and `gis.valleywater.org`), so end-to-end
+verification happened from a real devcontainer instead. `identify()` is
+confirmed working there - `--identify -121.9 37.3` returns `41.5276`, a
+plausible elevation for that spot (the Los Gatos/Almaden foothills south of
+San Jose). Getting there took one real bug: the ImageServer `identify`
+operation silently ignores a bare `sr` query parameter alongside a plain
+`"lon,lat"` geometry string - the live response echoed the point back under
+the service's *native* Web Mercator spatial reference (wkid 102100) instead
+of the requested EPSG:4326, so `(-121.9, 37.3)` degrees got reinterpreted as
+`(-121.9, 37.3)` **meters** near the Web Mercator origin (off the coast of
+Africa) - zero catalog items there, which surfaced as a misleading `NoData`
+rather than a loud error. `identify()` now embeds the spatial reference
+directly in the `geometry` JSON object (the standard ArcGIS REST
+convention) instead of relying on a separate `sr` param, which the service
+does honor.
+
+`read_window()`/`--bbox` uses `bboxSR`/`imageSR` for `exportImage`, a
+different (correctly-documented, unambiguous) parameter pair than
+`identify`'s bare `sr` - very likely unaffected by the same bug, but not
+yet independently confirmed against the live service the way `identify` is.
+Run `python scripts/fetch_lidar_elevation.py --bbox ... --output ...` and
+inspect the result before relying on it for anything downstream.
 
 ## Module layout
 
@@ -184,9 +199,9 @@ pytest tests/data/arcgis/test_streets.py tests/data/arcgis/test_catalog.py tests
 ```
 
 All tests mock HTTP responses with `responses`; none of them make live
-network calls. The exact CSJ Streets layer location was confirmed against
-the live catalog (see above); the USGS 3DEP elevation service's URL and
-endpoints were confirmed via web search/documentation but not by an actual
-request from this codebase's own sandbox, which can't reach
-`elevation.nationalmap.gov` either - see "Ground elevation, actually: USGS
-3DEP" above.
+network calls, since this codebase's own sandbox can't reach either
+`geo.sanjoseca.gov` or `elevation.nationalmap.gov`. Both the exact CSJ
+Streets layer location and USGS 3DEP's `identify()` have since been
+confirmed against the live services from a real devcontainer - see "Ground
+elevation, actually: USGS 3DEP" above for the one real bug that surfaced
+doing so.
