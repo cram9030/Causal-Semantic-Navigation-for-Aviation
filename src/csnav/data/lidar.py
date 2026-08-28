@@ -23,13 +23,16 @@ discovery needed here - it's a fixed, publicly documented federal endpoint,
 not a service whose name/location can move under a generic catalog folder.
 And unlike the Valley Water archive, there's no local
 download/extract/cache step either: every `read_window()`/`identify()` call
-is a live per-request raster query, requesting output directly in EPSG:4326
-(`bboxSR`/`imageSR`/`sr`) so the service reprojects server-side - no
-client-side `rasterio.warp` step needed here.
+is a live per-request raster query, requesting/specifying EPSG:4326
+throughout (`bboxSR`/`imageSR` for `read_window`; an embedded
+`spatialReference` on the point geometry for `identify` - see its
+docstring for why a bare `sr` param doesn't work) so the service
+reprojects server-side - no client-side `rasterio.warp` step needed here.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -107,12 +110,22 @@ class LidarElevationClient:
         return self._metadata
 
     def identify(self, lon: float, lat: float) -> float | None:
-        """Ground elevation at a single point, or ``None`` where the service has no data."""
+        """Ground elevation at a single point, or ``None`` where the service has no data.
+
+        The point's spatial reference must be embedded *in* the ``geometry``
+        JSON object, not passed as a separate ``sr`` query param - a bare
+        ``sr`` alongside a plain ``"lon,lat"`` string is silently ignored by
+        this operation (confirmed against the live service: the point comes
+        back echoed under the service's native Web Mercator SR instead of
+        the EPSG:4326 it was given, which reads as a real coordinate only by
+        accident - most inputs land far outside any coverage and misreport
+        as ``NoData`` instead of erroring loudly).
+        """
+        geometry = json.dumps({"x": lon, "y": lat, "spatialReference": {"wkid": OUTPUT_WKID}})
         params = {
             "f": "json",
-            "geometry": f"{lon},{lat}",
+            "geometry": geometry,
             "geometryType": "esriGeometryPoint",
-            "sr": OUTPUT_WKID,
             "returnGeometry": "false",
         }
         resp = self.session.get(f"{self.service_url}/identify", params=params, timeout=self.timeout)

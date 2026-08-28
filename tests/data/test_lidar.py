@@ -30,7 +30,14 @@ def test_identify_returns_elevation_value():
 
     url = responses.calls[0].request.url
     assert "geometryType=esriGeometryPoint" in url
-    assert "sr=4326" in url
+    # Regression test: the point's spatial reference must be embedded in the
+    # geometry JSON, not passed as a separate bare `sr` param - the latter is
+    # silently ignored by the live service (confirmed against a real
+    # request), causing the point to be misinterpreted under the service's
+    # native Web Mercator SR instead of EPSG:4326.
+    assert "spatialReference" in url
+    assert "4326" in url
+    assert "&sr=4326" not in url and "?sr=4326" not in url
 
 
 @responses.activate
