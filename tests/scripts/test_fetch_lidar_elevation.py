@@ -16,7 +16,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import fetch_lidar_elevation as fle  # noqa: E402
 from csnav.data.arcgis.models import Extent  # noqa: E402
 from csnav.data.arcgis.projections import lonlat_to_3857  # noqa: E402
-from csnav.data.lidar import LIDAR_PRODUCT_URLS  # noqa: E402
+from csnav.data.lidar import LIDAR_PRODUCT_URLS, LidarElevationError  # noqa: E402
 
 AOI_4326 = Extent(xmin=-121.90, ymin=37.30, xmax=-121.89, ymax=37.31, wkid=4326)
 ELEVATION_VALUE = 42.5
@@ -109,3 +109,61 @@ def test_main_second_run_does_not_redownload(tmp_path, monkeypatch):
 
     _run_main(argv, monkeypatch)
     assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_main_prefetch_only_downloads_without_bbox_or_identify(tmp_path, monkeypatch, capsys):
+    # Regression test for the "why does --bbox exist if the whole archive
+    # always downloads?" confusion - running with neither --bbox nor
+    # --identify should still trigger the (one-time) download/extract and
+    # just report what was found, rather than erroring.
+    responses.add(
+        responses.GET, LIDAR_PRODUCT_URLS["5ft"],
+        body=_zip_bytes({"dem.tif": _tiff_bytes_3857(AOI_4326)}), status=200,
+    )
+
+    cache_dir = tmp_path / "cache"
+    argv = ["fetch_lidar_elevation.py", "--cache-dir", str(cache_dir)]
+    _run_main(argv, monkeypatch)
+
+    assert len(responses.calls) == 1
+    captured = capsys.readouterr()
+    assert "dem.tif" in captured.out
+
+
+@responses.activate
+def test_main_bbox_without_output_errors(tmp_path, monkeypatch):
+    responses.add(
+        responses.GET, LIDAR_PRODUCT_URLS["5ft"],
+        body=_zip_bytes({"dem.tif": _tiff_bytes_3857(AOI_4326)}), status=200,
+    )
+
+    argv = [
+        "fetch_lidar_elevation.py",
+        "--cache-dir", str(tmp_path / "cache"),
+        "--bbox", str(AOI_4326.xmin), str(AOI_4326.ymin), str(AOI_4326.xmax), str(AOI_4326.ymax),
+    ]
+    with pytest.raises(SystemExit):
+        _run_main(argv, monkeypatch)
+
+
+@responses.activate
+def test_main_surfaces_gdb_diagnostic_when_no_raster_found(tmp_path, monkeypatch):
+    responses.add(
+        responses.GET, LIDAR_PRODUCT_URLS["5ft"],
+        body=_zip_bytes(
+            {
+                "5ft_contours.txt": b"some contour export",
+                "LiDAR5FT.gdb/a00000001.gdbtable": b"not a real gdbtable",
+            }
+        ),
+        status=200,
+    )
+
+    argv = ["fetch_lidar_elevation.py", "--cache-dir", str(tmp_path / "cache")]
+    with pytest.raises(LidarElevationError) as exc_info:
+        _run_main(argv, monkeypatch)
+
+    message = str(exc_info.value)
+    assert "LiDAR5FT.gdb" in message
+    assert ".txt" in message

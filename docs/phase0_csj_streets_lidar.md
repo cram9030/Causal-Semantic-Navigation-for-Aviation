@@ -71,28 +71,54 @@ that was the wrong model entirely: there's nothing to discover when the URL
 is fixed and already known. `csnav.data.lidar` replaces that attempt.)
 
 Because there's no bounding-box query support at the source, "for the AOI"
-scoping happens client-side, after the fact: `LidarElevationClient`
-downloads + extracts the chosen whole-county product once (cached under a
-`cache_dir`, skipped on a later call unless `overwrite=True` - these are
-large archives, not something to re-fetch per query), and every subsequent
-`read_window(bbox)`/`identify(lon, lat)` call is a local read against
-whatever raster(s) the archive contains, via `rasterio` - no live network
-call per query. The source raster's CRS is read from the file itself (not
-assumed), and `read_window`/`identify` reproject to EPSG:4326 on read if
-it isn't already, the same "never assume a source is already in EPSG:4326"
-rule the rest of this codebase follows (`CLAUDE.md` §2). If the archive
-turns out to contain many tiled rasters rather than one seamless raster,
-`read_window` mosaics whichever tiles intersect `bbox` via
-`rasterio.merge.merge` before reprojecting.
+scoping happens client-side, after the fact - and it only ever scopes a
+*read*, never the *fetch*: **the entire chosen whole-county product always
+downloads**, whether or not a caller ever asks for a `bbox`. There is no way
+to fetch less; Valley Water doesn't offer one. `LidarElevationClient`
+downloads + extracts the product once (cached under a `cache_dir`, skipped
+on a later call unless `overwrite=True` - these are large, whole-county
+archives, worth caching), and every subsequent `read_window(bbox)`/
+`identify(lon, lat)` call is a local read against whatever raster(s) the
+extracted archive contains, via `rasterio` - no live network call per query,
+but also no reduction in what was already downloaded. `--bbox` on
+`fetch_lidar_elevation.py` exists to keep the *output* file small (an AOI
+GeoTIFF, not the whole county's worth of pixels), not to keep the *download*
+small; running the script with neither `--bbox` nor `--identify` still
+triggers the (one-time) download and just reports the raster source(s)
+found, for exactly this reason - there's nothing left to scope without one
+of those two.
 
-This design is unverified end-to-end: this codebase's own dev/CI
-environment can't reach `gis.valleywater.org` either, so the archives'
-actual internal layout (one seamless raster vs. many tiles; file format;
-native CRS) is an assumption, not something read from a real download. If
-`ensure_local()`/the script's `--product` run and the archive doesn't
-contain a recognized raster file (`.tif`/`.tiff`/`.img`/`.asc`/`.adf` -
-see `RASTER_EXTENSIONS`), that's the signal this assumption needs revisiting
-against what's actually inside.
+The source raster's CRS is read from the file itself (not assumed), and
+`read_window`/`identify` reproject to EPSG:4326 on read if it isn't already,
+the same "never assume a source is already in EPSG:4326" rule the rest of
+this codebase follows (`CLAUDE.md` §2). If a raster source turns out to be
+many tiles rather than one seamless raster, `read_window` mosaics whichever
+tiles intersect `bbox` via `rasterio.merge.merge` before reprojecting.
+
+**What's actually inside the archive, confirmed against a real download:**
+this codebase's own dev/CI environment can't reach `gis.valleywater.org`, so
+the design above was originally written assuming a plain raster file
+(`.tif`/`.img`/etc.) straight in the ZIP - wrong. A real `LiDAR5FT.zip`
+extracts to an Esri **File Geodatabase** (`LiDAR5FT.gdb/`) plus a
+`5ft_contours.txt`, not a bare raster file. Reading raster/mosaic data out
+of a File Geodatabase with open-source GDAL is version/build-dependent - it
+normally needs Esri's proprietary FileGDB SDK compiled in (this repo's own
+sandbox has neither the `FileGDB` nor even the vector-only `OpenFileGDB`
+GDAL driver registered, so it can't be tested here at all). `discover_rasters()`
+now also looks inside any `.gdb` directory found under the extracted archive
+and lists its raster subdatasets (`list_gdb_raster_subdatasets`, via
+`rasterio.open(gdb_path).subdatasets`) - so this *should* work automatically
+in an environment whose GDAL build supports it, without needing anything
+further. If it doesn't - `ensure_local()` raises `LidarElevationError` with
+a message naming the `.gdb` path(s) found and every other file extension
+present (e.g. `.txt`) - that error message is the signal to check what GDAL
+actually reports for that `.gdb` (`gdalinfo path/to/LiDAR5FT.gdb`, or `python
+-c "import rasterio; ...` per the error text) and, if it turns out the
+geodatabase holds only vector contour lines rather than a raster/mosaic
+dataset, revisit this design entirely - a queryable elevation *surface* from
+contour *lines* needs interpolation (TIN, IDW, etc.), which is a materially
+different and larger piece of work than a raster windowed read, not
+implemented here.
 
 ## Module layout
 
@@ -136,23 +162,30 @@ how this maps onto the originally-sketched module layout.
 
 ## `LidarElevationClient`
 
-- `ensure_local(overwrite=False) -> list[Path]` - download (`download_archive`,
-  streamed with a `tqdm` progress bar, resumable-skip if the archive is
-  already on disk) + extract (`extract_archive`) the chosen `product`
-  (`"1ft"` or `"5ft"`), returning the raster file paths found. Called
-  automatically by `read_window`/`identify` on first use; call it explicitly
-  first to control when the (potentially large) download happens.
+- `ensure_local(overwrite=False) -> list[Path | str]` - download
+  (`download_archive`, streamed with a `tqdm` progress bar, resumable-skip if
+  the archive is already on disk) + extract (`extract_archive`) the chosen
+  `product` (`"1ft"` or `"5ft"`) - **always the whole archive**, regardless
+  of any `bbox` a caller might use afterwards; there is no scoped-fetch
+  option at the source. Returns the raster *sources* found via
+  `discover_rasters()`: plain files with a recognized extension
+  (`RASTER_EXTENSIONS`), plus, for each `.gdb` directory found
+  (`find_gdb_dirs`), any raster subdataset URIs GDAL reports inside it
+  (`list_gdb_raster_subdatasets` - see the File Geodatabase caveat above).
+  Called automatically by `read_window`/`identify` on first use; call it
+  explicitly first to control when the (potentially large) download happens,
+  or to just prefetch + inspect what was found without reading anything.
 - `read_window(bbox) -> ReprojectedTile` - the AOI raster covering `bbox`
-  (must be EPSG:4326), mosaicked from whichever extracted raster(s)
-  intersect it and reprojected to EPSG:4326 if the source CRS differs.
-  Returns a `ReprojectedTile` (reused from `arcgis/reproject.py` - same
+  (must be EPSG:4326), mosaicked from whichever raster source(s) intersect
+  it and reprojected to EPSG:4326 if the source CRS differs. Returns a
+  `ReprojectedTile` (reused from `arcgis/reproject.py` - same
   data/transform/crs/`to_geotiff()` shape).
 - `identify(lon, lat) -> float | None` - single-point elevation via a direct
   1x1-pixel index-and-read against the source raster (not a tiny
   `read_window` bbox - a bbox epsilon small enough to read as "a point" can
   still be narrower than this DEM's own pixel size, which would make
   `rasterio.merge.merge` round the output window to zero pixels). `None`
-  where no extracted raster covers the point, or the pixel is nodata.
+  where no raster source covers the point, or the pixel is nodata.
 
 ## Running the tests
 

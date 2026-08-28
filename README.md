@@ -122,25 +122,34 @@ queries it restricted to `--bbox` (in EPSG:4326; omit `--bbox` to pull the
 whole layer), and writes the results as a GeoJSON `FeatureCollection`.
 Pass `--layer-url` to skip discovery and query a known layer URL directly.
 
-### Fetching LIDAR elevation for an area of interest
+### Fetching LIDAR elevation
+
+Unlike CSJ Streets and San Jose's own imagery, this dataset isn't served
+through `geo.sanjoseca.gov`'s ArcGIS Server at all - Valley Water publishes
+it as two whole-county ZIP downloads (`--product 1ft`/`5ft`, default `5ft`),
+with no scoped-query support. **The entire chosen product always downloads,
+regardless of `--bbox`** - there's no way to fetch less. `--bbox`/`--output`
+(or `--identify`) only scope what gets read out of the already-downloaded
+local cache (under `--cache-dir`, skipped on a later run unless
+`--overwrite`) into a small GeoTIFF or single value - not what's fetched
+over the network.
 
 ```bash
+# one-time prefetch + inventory of what raster source(s) were found (no bbox needed)
+python scripts/fetch_lidar_elevation.py --product 5ft
+
+# read a small AOI out of the (already-downloaded) archive
 python scripts/fetch_lidar_elevation.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output data/raw/lidar/downtown_dem.tif
 ```
 
-Unlike CSJ Streets and San Jose's own imagery, this dataset isn't served
-through `geo.sanjoseca.gov`'s ArcGIS Server at all - Valley Water publishes
-it as two whole-county ZIP downloads (`--product 1ft`/`5ft`, default `5ft`).
-This downloads + extracts the chosen product once (cached under
-`--cache-dir`, skipped on a later run unless `--overwrite` - these are
-large archives, not something to re-fetch per query), then reads just the
-window covering `--bbox` out of whichever raster(s) the archive contains,
-mosaicking/reprojecting to EPSG:4326 as needed, and writes it as a GeoTIFF.
 Pass `--identify LON LAT` instead of `--bbox`/`--output` to print a single
-point's elevation as a quick check. See
+point's elevation. See
 [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
-more, including the caveat that the archives' internal layout is unverified
-from this repo's own dev/CI environment (which can't reach
-`gis.valleywater.org` either).
+more, including a real-world caveat: a downloaded archive turns out to
+contain an Esri File Geodatabase (`.gdb`) rather than a plain raster file,
+and reading raster data out of one depends on GDAL being built with Esri's
+proprietary FileGDB SDK - if `ensure_local()`/the script can't find a
+readable raster, the error message names what it *did* find so you can
+check with `gdalinfo` and report back.

@@ -1,4 +1,5 @@
 import io
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -15,9 +16,12 @@ from csnav.data.lidar import (
     LIDAR_PRODUCT_URLS,
     LidarElevationClient,
     LidarElevationError,
+    discover_rasters,
     download_archive,
     extract_archive,
+    find_gdb_dirs,
     find_raster_files,
+    list_gdb_raster_subdatasets,
     read_elevation_window,
 )
 
@@ -164,3 +168,68 @@ def test_client_read_window_and_identify(tmp_path):
 def test_client_rejects_unknown_product(tmp_path):
     with pytest.raises(ValueError):
         LidarElevationClient(cache_dir=tmp_path, product="10ft")
+
+
+def _make_gdb_dir(root: Path, name: str = "LiDAR5FT.gdb") -> Path:
+    gdb_dir = root / name
+    gdb_dir.mkdir()
+    (gdb_dir / "a00000001.gdbtable").write_bytes(b"not a real gdbtable")
+    return gdb_dir
+
+
+def test_find_gdb_dirs_finds_esri_geodatabase_directories(tmp_path):
+    gdb_dir = _make_gdb_dir(tmp_path)
+    (tmp_path / "not_a_gdb").mkdir()
+
+    assert find_gdb_dirs(tmp_path) == [gdb_dir]
+
+
+def test_list_gdb_raster_subdatasets_returns_empty_when_gdal_cant_open_it(tmp_path):
+    # This sandbox's rasterio/GDAL build has no FileGDB/OpenFileGDB driver at
+    # all, so a real .gdb directory (even a fabricated, non-functional one)
+    # can't be opened as a raster - list_gdb_raster_subdatasets must degrade
+    # to an empty list rather than raising.
+    gdb_dir = _make_gdb_dir(tmp_path)
+    assert list_gdb_raster_subdatasets(gdb_dir) == []
+
+
+def test_discover_rasters_combines_plain_files_and_gdb_subdatasets(tmp_path, monkeypatch):
+    tiff_path = tmp_path / "tile.tif"
+    tiff_path.write_bytes(_tiff_bytes_3857(AOI_4326))
+    gdb_dir = _make_gdb_dir(tmp_path)
+
+    monkeypatch.setattr(
+        "csnav.data.lidar.list_gdb_raster_subdatasets",
+        lambda path: [f"OpenFileGDB:{path}:elevation"] if path == gdb_dir else [],
+    )
+
+    rasters = discover_rasters(tmp_path)
+
+    assert tiff_path in rasters
+    assert f"OpenFileGDB:{gdb_dir}:elevation" in rasters
+
+
+def test_ensure_local_error_reports_gdb_and_other_files_found(tmp_path):
+    # Reproduces the real-world shape reported against this client: the
+    # archive contains only a .gdb (unreadable by this GDAL build) and a
+    # .txt contours export - no plain raster file at all.
+    zip_path = tmp_path / "archive.zip"
+    zip_path.write_bytes(
+        _zip_bytes(
+            {
+                "5ft_contours.txt": b"some contour export",
+                "LiDAR5FT.gdb/a00000001.gdbtable": b"not a real gdbtable",
+            }
+        )
+    )
+
+    client = LidarElevationClient(cache_dir=tmp_path, product="5ft")
+    client.archive_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(zip_path, client.archive_path)
+
+    with pytest.raises(LidarElevationError) as exc_info:
+        client.ensure_local()
+
+    message = str(exc_info.value)
+    assert "LiDAR5FT.gdb" in message
+    assert ".txt" in message

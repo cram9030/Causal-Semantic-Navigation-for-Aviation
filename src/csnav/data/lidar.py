@@ -97,26 +97,78 @@ def download_archive(
     return dest_path
 
 
-def extract_archive(zip_path: Path, dest_dir: Path, overwrite: bool = False) -> list[Path]:
-    """Extract every member of ``zip_path`` into ``dest_dir``; return the raster files found."""
+def extract_archive(zip_path: Path, dest_dir: Path, overwrite: bool = False) -> list[Path | str]:
+    """Extract every member of ``zip_path`` into ``dest_dir``; return the raster sources found."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     marker = dest_dir / ".extracted"
     if marker.exists() and not overwrite:
         logger.info("already extracted: %s", dest_dir)
-        return find_raster_files(dest_dir)
+        return discover_rasters(dest_dir)
 
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(dest_dir)
     marker.write_text("")
-    return find_raster_files(dest_dir)
+    return discover_rasters(dest_dir)
 
 
 def find_raster_files(root: Path) -> list[Path]:
-    """Every file under ``root`` (recursively) with a recognized raster extension."""
+    """Every file under ``root`` (recursively) with a recognized single-file raster extension.
+
+    This does *not* include rasters (if any) stored inside a `.gdb` Esri File
+    Geodatabase - those aren't plain files with one of :data:`RASTER_EXTENSIONS`,
+    see :func:`find_gdb_dirs`/:func:`discover_rasters`.
+    """
     return sorted(p for p in root.rglob("*") if p.suffix.lower() in RASTER_EXTENSIONS)
 
 
-def _find_intersecting(raster_paths: list[Path], bbox: Extent) -> list[Path]:
+def find_gdb_dirs(root: Path) -> list[Path]:
+    """Every `.gdb` Esri File Geodatabase directory under ``root``."""
+    return sorted(p for p in root.rglob("*.gdb") if p.is_dir())
+
+
+def list_gdb_raster_subdatasets(gdb_path: Path) -> list[str]:
+    """GDAL subdataset URIs for any raster/mosaic dataset(s) inside ``gdb_path``.
+
+    Returns an empty list if GDAL can't open ``gdb_path`` at all (this
+    environment's GDAL build may lack the ``FileGDB``/``OpenFileGDB`` driver
+    entirely, or it may only support the vector side of a File Geodatabase -
+    reading a *raster* dataset out of one normally needs Esri's proprietary
+    FileGDB SDK compiled into GDAL) or if it opens but reports no raster
+    subdatasets (e.g. the geodatabase holds only vector data, such as
+    exported contour lines rather than a DEM).
+    """
+    try:
+        with rasterio.open(gdb_path) as src:
+            return list(src.subdatasets)
+    except rasterio.errors.RasterioIOError as exc:
+        logger.debug("could not open %s as a raster source: %s", gdb_path, exc)
+        return []
+
+
+def discover_rasters(root: Path) -> list[Path | str]:
+    """Every raster source found under ``root``: plain files, plus any `.gdb` raster subdatasets.
+
+    A `.gdb` directory that GDAL can't read as a raster at all (see
+    :func:`list_gdb_raster_subdatasets`) is logged and otherwise ignored here -
+    :meth:`LidarElevationClient.ensure_local` surfaces it in its error message
+    if nothing else was found, rather than failing silently.
+    """
+    rasters: list[Path | str] = list(find_raster_files(root))
+    for gdb_path in find_gdb_dirs(root):
+        subdatasets = list_gdb_raster_subdatasets(gdb_path)
+        if subdatasets:
+            logger.info("%s: found %d raster subdataset(s)", gdb_path, len(subdatasets))
+            rasters.extend(subdatasets)
+        else:
+            logger.warning(
+                "%s: GDAL found no raster subdatasets here (this environment's GDAL build may not "
+                "support File Geodatabase rasters, or this geodatabase may hold only vector data)",
+                gdb_path,
+            )
+    return rasters
+
+
+def _find_intersecting(raster_paths: list[Path | str], bbox: Extent) -> list[Path | str]:
     hits = []
     for path in raster_paths:
         with rasterio.open(path) as src:
@@ -128,7 +180,7 @@ def _find_intersecting(raster_paths: list[Path], bbox: Extent) -> list[Path]:
     return hits
 
 
-def read_elevation_window(raster_paths: list[Path], bbox: Extent) -> ReprojectedTile:
+def read_elevation_window(raster_paths: list[Path | str], bbox: Extent) -> ReprojectedTile:
     """Read + mosaic whichever of ``raster_paths`` intersect ``bbox``, in EPSG:4326.
 
     ``bbox`` must already be EPSG:4326. Reprojects from the source raster(s)'
@@ -172,6 +224,30 @@ def read_elevation_window(raster_paths: list[Path], bbox: Extent) -> Reprojected
     return ReprojectedTile(data=dst_data, transform=dst_transform, crs=OUTPUT_CRS, width=dst_width, height=dst_height)
 
 
+def _no_rasters_found_message(extract_dir: Path) -> str:
+    gdb_dirs = find_gdb_dirs(extract_dir)
+    other_extensions = sorted({p.suffix.lower() for p in extract_dir.rglob("*") if p.is_file() and p.suffix})
+
+    lines = [
+        f"no readable raster found under {extract_dir} - archive extracted, but neither a "
+        f"file with a recognized extension ({', '.join(RASTER_EXTENSIONS)}) nor a readable "
+        "raster subdataset inside a .gdb was found.",
+    ]
+    if gdb_dirs:
+        lines.append(
+            f"Found {len(gdb_dirs)} File Geodatabase(s) that GDAL could not read as a raster: "
+            + ", ".join(str(p) for p in gdb_dirs)
+            + ". This usually means either this GDAL build lacks File Geodatabase raster support "
+            "(needs Esri's proprietary FileGDB SDK compiled in - `pip show rasterio` /"
+            " `python -c \"import rasterio; print(sorted(rasterio.Env().drivers()))\"` inside "
+            "`with rasterio.Env():` will show whether FileGDB/OpenFileGDB is registered), or the "
+            "geodatabase holds only vector data (e.g. exported contour lines) rather than a DEM."
+        )
+    if other_extensions:
+        lines.append(f"Other file types found in the archive: {', '.join(other_extensions)}.")
+    return " ".join(lines)
+
+
 class LidarElevationClient:
     """Downloads + caches a Valley Water LIDAR DEM product, then serves local windowed reads.
 
@@ -196,7 +272,7 @@ class LidarElevationClient:
         self.product = product
         self.session = session or requests.Session()
         self.timeout = timeout
-        self._raster_paths: list[Path] | None = None
+        self._raster_paths: list[Path | str] | None = None
 
     @property
     def archive_path(self) -> Path:
@@ -206,11 +282,18 @@ class LidarElevationClient:
     def extract_dir(self) -> Path:
         return self.cache_dir / self.product
 
-    def ensure_local(self, overwrite: bool = False) -> list[Path]:
-        """Download (if needed) and extract the archive; return the raster files found.
+    def ensure_local(self, overwrite: bool = False) -> list[Path | str]:
+        """Download (if needed) and extract the archive; return the raster sources found.
 
-        Raises :class:`LidarElevationError` if extraction produced no file
-        with a recognized raster extension (see :data:`RASTER_EXTENSIONS`).
+        A "raster source" is either a plain file with a recognized extension
+        (see :data:`RASTER_EXTENSIONS`) or a GDAL raster-subdataset URI found
+        inside a `.gdb` Esri File Geodatabase (see :func:`discover_rasters`).
+
+        Raises :class:`LidarElevationError` if none were found - the message
+        lists what *was* found instead (any `.gdb` directories, and other
+        extracted file extensions), since a whole-county archive with zero
+        readable rasters usually means this environment's GDAL build can't
+        read this product's actual format rather than an empty download.
         """
         download_archive(
             LIDAR_PRODUCT_URLS[self.product], self.archive_path,
@@ -218,10 +301,7 @@ class LidarElevationClient:
         )
         self._raster_paths = extract_archive(self.archive_path, self.extract_dir, overwrite=overwrite)
         if not self._raster_paths:
-            raise LidarElevationError(
-                f"{self.archive_path} extracted to {self.extract_dir} but no recognized raster "
-                f"file ({', '.join(RASTER_EXTENSIONS)}) was found there"
-            )
+            raise LidarElevationError(_no_rasters_found_message(self.extract_dir))
         return self._raster_paths
 
     def read_window(self, bbox: Extent) -> ReprojectedTile:
