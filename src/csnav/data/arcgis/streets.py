@@ -169,3 +169,23 @@ class CSJStreetsClient:
             offset += len(features)
 
         return segments
+
+
+def segments_from_geojson(data: dict[str, Any]) -> list[StreetSegment]:
+    """Parse a GeoJSON ``FeatureCollection`` (EPSG:4326) into :class:`StreetSegment` objects.
+
+    The inverse of :meth:`StreetSegment.to_geojson_feature`, so a cached pull
+    written by ``scripts/fetch_csj_streets.py`` can be read back and fed to the
+    offline manifest builder. Pinning a manifest to a flight-planning cycle
+    (integration plan §3.3) needs exactly this: rebuilding from an archived
+    snapshot rather than from whatever the weekly refresh currently holds.
+    Non-line features are skipped rather than raising, since a mixed
+    collection is a property of the export, not an error.
+    """
+    segments: list[StreetSegment] = []
+    for feature in data.get("features") or []:
+        geometry_type = (feature.get("geometry") or {}).get("type")
+        if geometry_type not in ("LineString", "MultiLineString"):
+            continue
+        segments.append(_segment_from_geojson_feature(feature))
+    return segments

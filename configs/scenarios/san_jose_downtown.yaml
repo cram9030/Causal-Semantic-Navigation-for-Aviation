@@ -1,0 +1,110 @@
+# Pilot scenario: a low-altitude survey over downtown San Jose.
+#
+# This is the versioned home of the Phase 1 inputs (docs/INTEGRATION_PLAN.md
+# §3.2 / §5): the candidate trajectory set T, the primary trajectory t_p, the
+# known start state x_0, and the CONOPS parameters the tube and manifest
+# builder are driven by.
+#
+# Units: lat/lon in decimal degrees (WGS84, EPSG:4326); height_m in meters
+# above the WGS84 ellipsoid; time_s in seconds from flight-plan start; every
+# distance/radius in meters.
+#
+# The heights below sit ~310 m above San Jose's ~35 m ground elevation, i.e.
+# ~1000 ft AGL - inside the 200-4000 ft AGL envelope the project targets.
+# Waypoint times assume ~45 m/s (~87 kt) ground speed.
+
+id: san_jose_downtown
+description: >
+  Northeast-bound survey across downtown San Jose with two alternates, the
+  transition corridors between them, and a return path to x_0.
+
+trajectory_set:
+  id: san_jose_downtown
+  primary: t_p
+
+  # x_0 - the known starting state (integration plan §3.2).
+  x0: {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 0.0}
+
+  trajectories:
+    - id: t_p
+      role: primary
+      metadata: {name: "Downtown NE transit"}
+      waypoints:
+        - {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 0.0}
+        - {lat: 37.3421, lon: -121.8757, height_m: 380.0, time_s: 41.0}
+        - {lat: 37.3527, lon: -121.8571, height_m: 380.0, time_s: 86.0}
+        - {lat: 37.3648, lon: -121.8402, height_m: 350.0, time_s: 131.0}
+
+    - id: t_alt_north
+      role: alternate
+      metadata: {name: "Northern alternate"}
+      waypoints:
+        - {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 0.0}
+        - {lat: 37.3468, lon: -121.8792, height_m: 400.0, time_s: 47.0}
+        - {lat: 37.3589, lon: -121.8601, height_m: 400.0, time_s: 95.0}
+        - {lat: 37.3690, lon: -121.8419, height_m: 350.0, time_s: 138.0}
+
+    - id: t_alt_east
+      role: alternate
+      metadata: {name: "Eastern alternate"}
+      waypoints:
+        - {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 0.0}
+        - {lat: 37.3372, lon: -121.8688, height_m: 380.0, time_s: 45.0}
+        - {lat: 37.3441, lon: -121.8497, height_m: 380.0, time_s: 87.0}
+        - {lat: 37.3560, lon: -121.8365, height_m: 350.0, time_s: 126.0}
+
+    # Transition corridors. These are flown between candidates rather than
+    # being candidates themselves, so they carry role: transition and declare
+    # which pair they join.
+    - id: x_tp_to_north
+      role: transition
+      connects: [t_p, t_alt_north]
+      waypoints:
+        - {lat: 37.3421, lon: -121.8757, height_m: 380.0, time_s: 0.0}
+        - {lat: 37.3455, lon: -121.8720, height_m: 390.0, time_s: 11.0}
+        - {lat: 37.3468, lon: -121.8792, height_m: 400.0, time_s: 26.0}
+
+    - id: x_tp_to_east
+      role: transition
+      connects: [t_p, t_alt_east]
+      waypoints:
+        - {lat: 37.3421, lon: -121.8757, height_m: 380.0, time_s: 0.0}
+        - {lat: 37.3392, lon: -121.8712, height_m: 380.0, time_s: 11.0}
+        - {lat: 37.3372, lon: -121.8688, height_m: 380.0, time_s: 18.0}
+
+    - id: x_return_x0
+      role: transition
+      connects: [t_p, x0]
+      waypoints:
+        - {lat: 37.3648, lon: -121.8402, height_m: 350.0, time_s: 0.0}
+        - {lat: 37.3500, lon: -121.8620, height_m: 380.0, time_s: 56.0}
+        - {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 130.0}
+
+  # Edges of the trajectory graph. "x0" is the reserved node id for the known
+  # start state, so the return path has somewhere to point.
+  transitions:
+    - {source: x0, target: t_p}
+    - {source: t_p, target: t_alt_north, via: x_tp_to_north}
+    - {source: t_p, target: t_alt_east, via: x_tp_to_east}
+    - {source: t_p, target: x0, via: x_return_x0}
+
+conops:
+  label: baseline_250m
+  # The RNP-style containment radius. Deliberately a config value, not a
+  # constant anywhere in code: it is swept across CONOPS/altitude cases
+  # (integration plan §8, CLAUDE.md core decision 4).
+  tube_radius_m: 250.0
+  # Transition corridors get their own, wider radius here. Set this to null to
+  # have them share tube_radius_m instead - §8 leaves that choice open.
+  transition_tube_radius_m: 400.0
+  # Arc length of one manifest window, in meters.
+  window_length_m: 1000.0
+  # Nadir-pointing camera; used to grow each window's tube corridor out to
+  # what could actually be seen from inside it.
+  field_of_view:
+    horizontal_deg: 60.0
+    vertical_deg: 45.0
+  # DPW imagery cache level the manifests record tiles at. Level 18 is ~0.6
+  # m/px in Web Mercator - coarse enough that a whole route's tile set stays
+  # tractable, fine enough to see street geometry.
+  tile_level: 18

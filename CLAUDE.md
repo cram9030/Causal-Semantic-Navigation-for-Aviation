@@ -51,7 +51,8 @@ loop.** Most "why is it built this way" questions are answered there, not in cod
 data/acquisition/     San Jose imagery (DPW_ImageryCached2025), CSJ Streets, LIDAR clients — all normalize output to EPSG:4326
 data/ground_truth/    Rasterize CSJ street geometry (+ widths) over imagery tiles into panoptic training labels
 geometry/             WGS84 <-> local ENU conversions; the only place metric geometry math should live
-trajectory/           Trajectory / TrajectorySet / Waypoint definitions, TubeModel, offline ManifestBuilder
+trajectory/           Trajectory / TrajectorySet / Waypoint definitions, TubeModel, offline ManifestBuilder, scenario config
+viz/                  Trajectory-set graph + profile figures (matplotlib) and interactive tube/tile/manifest maps (folium)
 segmentation/         Mask2Former training + inference, confusion-matrix uncertainty quantification
 scene_graph/          Per-slice builder: predict -> possible-roads lookup -> Mask2Former match
 causal_model/         Slice DAG spec, DoWhy-GCM mechanism fitting, the slice-chaining filter loop

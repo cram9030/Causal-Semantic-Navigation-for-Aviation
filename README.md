@@ -152,6 +152,76 @@ print a single point's elevation rather than fetching a raster. See
 [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
 the full story of how this data source was chosen.
 
+## Phase 1: trajectory set, tubes, and precomputed manifests
+
+This phase defines the candidate trajectory set `T`, the primary trajectory
+`t_p`, the known start state `x_0`, and the RNP-style containment tube; builds
+the offline per-window landmark manifests from those; and provides the
+visualization tools for reviewing all of it. See
+[`docs/phase1_trajectory_manifests.md`](docs/phase1_trajectory_manifests.md).
+
+The pilot trajectory set and its CONOPS parameters live in
+[`configs/scenarios/san_jose_downtown.yaml`](configs/scenarios/san_jose_downtown.yaml).
+The tube radius is a config value with no default anywhere in code - it is
+swept across experiments (`--tube-radius`, or `ConopsConfig.with_tube_radius`).
+
+### Visualizing the trajectory set
+
+```bash
+pip install -e ".[dev,viz]"
+
+python scripts/visualize_trajectories.py \
+    --scenario configs/scenarios/san_jose_downtown.yaml \
+    --output-dir out/viz
+```
+
+Writes, into `--output-dir`:
+
+| File | What it shows |
+| --- | --- |
+| `trajectory_graph.png` | The graph of `T`: candidates as nodes, transition corridors as edges, `x_0` as the entry node - plus one arc-length profile per candidate showing height above ground, the tube radius, the tube+FOV outer radius, and the manifest window boundaries. |
+| `trajectory_set.html` | Interactive map of every trajectory with its own tube corridor and visible footprint, over San Jose imagery. |
+| `trajectory_<id>.html` | One map per trajectory: its tube at the configured radius, the per-window visible footprints, and the imagery tiles those footprints cover. |
+
+#### Options
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--scenario PATH` | yes | - | Scenario YAML defining `T`, `t_p`, `x_0`, and the CONOPS parameters. |
+| `--output-dir PATH` | yes | - | Directory to write the figure and maps into; created if missing. |
+| `--tube-radius M` | no | the scenario's `conops.tube_radius_m` | Override the tube radius, in meters - the sweep entry point. |
+| `--tile-level N` | no | the scenario's `conops.tile_level` | Imagery cache level for the "tiles in view" layer. |
+| `--no-tiles` | no | off | Skip the imagery-tile layer on the per-trajectory maps. |
+| `--no-imagery` | no | off | Omit the San Jose DPW imagery basemap layer, for maps reviewed without network access. |
+| `--dpi N` | no | 140 | Raster DPI for the PNG figure. |
+| `-v`, `--verbose` | no | off | DEBUG-level logging. |
+
+The maps are self-contained HTML - open them in a browser. Every element is a
+toggleable layer, and hovering a corridor, window footprint, or tile shows the
+numbers behind it (window id, arc-length span, max AGL, FOV ground radius,
+tile `level/row/col`).
+
+### Building the landmark manifests
+
+```bash
+python scripts/build_manifests.py \
+    --scenario configs/scenarios/san_jose_downtown.yaml \
+    --output data/manifests/san_jose_downtown_r250.json \
+    --map out/viz/manifests.html
+```
+
+For each window of each trajectory, this grows the tube by the sensor's ground
+field of view, queries CSJ Streets against that envelope, clips the returned
+centerlines to it, derives their intersections, and records the imagery tiles
+the window covers. The result is one pinned JSON bundle - the runtime "possible
+roads" lookup reads it and never re-queries CSJ Streets.
+
+Pass `--streets-geojson` to build from an archived pull written by
+`scripts/fetch_csj_streets.py` instead of the live layer; prefer that when
+rebuilding a manifest that has to match an earlier flight-planning cycle, since
+the live layer refreshes weekly. Pass `--elevation` to derive AGL from USGS
+3DEP ground elevation rather than treating waypoint height as AGL.
+
 ### Converting between WGS84 and a local ENU tangent plane
 
 ```python

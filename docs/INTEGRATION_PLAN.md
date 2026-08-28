@@ -195,8 +195,35 @@ src/csnav/data/
 
 See `docs/phase0_arcgis_tile_client.md` and `docs/phase0_csj_streets_lidar.md`
 for the rationale behind this layout, the discovery-over-hardcoding approach
-the ArcGIS clients take, and why the LIDAR client doesn't. `data/ground_truth/`
-and everything below it in the aspirational tree remain unimplemented (Phase 1+).
+the ArcGIS clients take, and why the LIDAR client doesn't.
+
+**Implementation note (Phase 1):** the trajectory set, tube model, and offline
+manifest builder land under `src/csnav/` for the same reason, alongside a
+visualization package and a `configs/scenarios/` tree holding the versioned
+`T` / `t_p` / `x_0` / CONOPS definitions (tube radius among them, so radius
+sweeps are a config change rather than a code change - see §8):
+
+```
+src/csnav/
+├── trajectory/
+│   ├── waypoints.py         # Waypoint (4D, WGS84), TrajectoryRole
+│   ├── trajectory.py        # Trajectory, TrajectorySet, Transition, TrajectoryWindow
+│   ├── tube.py              # TubeModel: lateral containment + corridor/envelope geometry
+│   ├── coverage.py          # visible footprint (tube + FOV), TileRef, AGL providers
+│   ├── manifest.py          # LandmarkManifest, ManifestBundle, JSON pinning
+│   ├── manifest_builder.py  # the offline builder (§3.3), and StaticStreetsSource
+│   └── config.py            # Scenario / ConopsConfig, versioned YAML loading
+├── geometry/
+│   ├── fov.py               # FieldOfView -> ground footprint radius
+│   └── shapes.py            # WGS84 <-> ENU conversion for whole shapely geometries
+└── viz/
+    ├── graph_view.py        # matplotlib: the graph of T, per-trajectory profiles
+    └── map_view.py          # folium: corridors, window footprints, tiles, manifests
+```
+
+`data/ground_truth/`, `segmentation/`, `scene_graph/`, `causal_model/`,
+`baseline_slam/` and `eval/` remain unimplemented (Phase 2+). See
+`docs/phase1_trajectory_manifests.md`.
 
 ---
 

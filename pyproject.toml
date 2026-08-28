@@ -15,12 +15,25 @@ dependencies = [
     "pyproj>=3.6",
     "Pillow>=10.0",
     "tqdm>=4.66",
+    # Phase 1 (trajectory/): metric buffering and clipping for the RNP tube and
+    # manifest footprints, the trajectory/slice graph type, and the versioned
+    # scenario config format.
+    "shapely>=2.0",
+    "networkx>=3.0",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "responses>=0.25",
+]
+# Phase 1 (viz/) visualization: static trajectory-graph/profile figures and
+# interactive Leaflet maps of tubes, window footprints, and imagery tiles.
+# Kept optional so the data pipeline installs without a plotting stack.
+viz = [
+    "matplotlib>=3.8",
+    "folium>=0.15",
 ]
 # Phase 2 (segmentation/) fine-tuning deps: torch/torchvision's Linux wheels
 # on PyPI bundle CUDA support by default, so `pip install torch` picks up the
