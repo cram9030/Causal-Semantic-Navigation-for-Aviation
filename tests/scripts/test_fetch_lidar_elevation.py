@@ -59,6 +59,22 @@ def test_resolve_service_url_raises_when_no_match(capsys):
 
 
 @responses.activate
+def test_resolve_service_url_lists_other_image_servers_when_name_filter_matches_none():
+    responses.add(
+        responses.GET, BASE,
+        json={
+            "folders": [],
+            "services": [{"name": "Imagery/DPW_Terrain2025", "type": "ImageServer"}],
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        fle.resolve_service_url(_args())
+
+    assert "DPW_Terrain2025" in str(exc_info.value)
+
+
+@responses.activate
 def test_main_exports_geotiff(tmp_path):
     responses.add(responses.GET, f"{SERVICE_URL}/exportImage", body=_tiny_tiff_bytes(), content_type="image/tiff")
 

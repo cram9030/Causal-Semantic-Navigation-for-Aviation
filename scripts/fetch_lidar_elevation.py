@@ -48,9 +48,28 @@ def resolve_service_url(args: argparse.Namespace) -> str:
         root=args.root, name_contains=args.name_contains, service_types=("ImageServer",)
     )
     if not matches:
+        # Nothing matched the name filter - rather than just failing, list every
+        # ImageServer that *does* exist under this root so the caller (who has
+        # live access to the catalog, unlike this codebase's own dev/test
+        # environment) can identify the right one by eye and either retry with
+        # a different --name-contains or pass --service-url directly.
+        all_image_servers = catalog.discover_services(
+            root=args.root, name_contains="", service_types=("ImageServer",)
+        )
+        if all_image_servers:
+            listing = "\n".join(f"  - {ref.full_name}" for ref in all_image_servers)
+            raise SystemExit(
+                f"no ImageServer matching {args.name_contains!r} found under "
+                f"{args.root or '(whole catalog)'!r}, but {len(all_image_servers)} other "
+                f"ImageServer(s) exist there:\n{listing}\n"
+                "Pick one with --service-url, or retry with a different --name-contains."
+            )
         raise SystemExit(
-            f"no ImageServer matching {args.name_contains!r} found under {args.root or '(root)'!r} - "
-            "pass --service-url directly if you already know it"
+            f"no ImageServer at all found under {args.root or '(whole catalog)'!r} - the LIDAR "
+            "elevation product may not be published as a live ArcGIS ImageServer in this catalog "
+            "(San Jose's 'Imagery and Elevation' Hub page may only offer point-cloud/download "
+            "content there instead of a queryable raster service). Pass --service-url directly "
+            "if you already know the endpoint, or --root to search a different folder."
         )
     if len(matches) > 1:
         logger.warning(

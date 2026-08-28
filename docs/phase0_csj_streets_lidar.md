@@ -43,10 +43,22 @@ opposed to a plain HTTP error) still propagates - that typically means
 something is wrong with the request itself, not just "this folder isn't
 here".
 
-The LIDAR elevation product, by contrast, is published as its own
-`ImageServer`, so it only needs the existing service-level discovery
-(`ArcGISCatalog.discover_services(..., service_types=("ImageServer",))`) -
-no sublayer resolution required.
+The LIDAR elevation product is expected to be published as its own
+`ImageServer` (unlike `Streets`, no sublayer resolution should be needed -
+just `ArcGISCatalog.discover_services(..., service_types=("ImageServer",))`),
+but its exact name is *not* confirmed the way `Streets`' location is: this
+codebase's own dev/CI environment can't reach `geo.sanjoseca.gov` at all, so
+the `--name-contains "Elevation"` default is a guess, not a verified name.
+When it matches nothing, `fetch_lidar_elevation.py` doesn't just fail - it
+lists every other `ImageServer` that *does* exist under `--root` so you can
+identify the right one by eye from an environment with real catalog access,
+and either retry with a different `--name-contains` or pass `--service-url`
+directly. It's also possible the LIDAR product isn't exposed as a live
+ArcGIS ImageServer at all - San Jose's "Imagery and Elevation" page on its
+ArcGIS Hub portal may only offer point-cloud/download content there instead
+of a queryable raster service, in which case `export_elevation()`/`identify()`
+would need a different transport entirely; the script's error message says
+so if the catalog has no ImageServer under `--root` whatsoever.
 
 Both `scripts/fetch_csj_streets.py` and `scripts/fetch_lidar_elevation.py`
 also accept an explicit `--layer-url`/`--service-url` to skip discovery

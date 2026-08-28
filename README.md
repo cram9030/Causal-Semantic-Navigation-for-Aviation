@@ -136,3 +136,11 @@ service reprojects server-side), and writes it as a GeoTIFF. Pass
 `--identify LON LAT` instead of `--bbox`/`--output` to print a single point's
 elevation as a quick reachability check, or `--service-url` to skip
 discovery and use a known service URL directly.
+
+The default `--name-contains "Elevation"` is unverified (this repo's own
+dev/CI environment can't reach `geo.sanjoseca.gov`) - if it matches nothing,
+the script lists every other `ImageServer` it does find under `--root` so
+you can pick the right one and rerun with `--service-url` or a different
+`--name-contains`. See
+[`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
+more.
