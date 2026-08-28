@@ -6,12 +6,14 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # `dev`  - test/lint tooling (pytest, responses)
+# `viz`  - Phase 1 visualization (matplotlib, folium); the trajectory/tube/
+#          manifest figures and maps, and the tests that render them
 # `ml`   - Phase 2 segmentation training deps (torch, torchvision,
 #          transformers, scikit-learn). Installed by default so the GPU
 #          path is ready to use, not something a contributor has to
-#          remember to opt into. Both are declared in pyproject.toml so
+#          remember to opt into. All are declared in pyproject.toml so
 #          this stays the single source of truth for versions.
-pip install --no-cache-dir -e ".[dev,ml]"
+pip install --no-cache-dir -e ".[dev,viz,ml]"
 
 echo "--- GPU check ---"
 python -c "

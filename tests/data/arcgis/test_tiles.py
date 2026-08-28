@@ -99,3 +99,28 @@ def test_sample_tiles_covering_extent_stays_cheap_for_a_huge_grid():
 
     sample = sample_tiles_covering_extent(huge_tile_info, level=0, extent=extent, sample_size=30)
     assert 0 < len(sample) <= 30
+
+
+def test_web_mercator_scheme_level0_is_one_world_tile():
+    """The standard EPSG:3857 scheme: level 0 is a single 256x256 world tile."""
+    from csnav.data.arcgis.tiles import WEB_MERCATOR_ORIGIN, web_mercator_tile_info
+
+    tile_info = web_mercator_tile_info(max_level=5)
+    bounds = tile_bounds(tile_info, 0, 0, 0)
+
+    assert tile_info.wkid == 3857
+    assert (tile_info.rows, tile_info.cols) == (256, 256)
+    assert bounds.xmin == pytest.approx(-WEB_MERCATOR_ORIGIN)
+    assert bounds.ymax == pytest.approx(WEB_MERCATOR_ORIGIN)
+    assert bounds.xmax - bounds.xmin == pytest.approx(2 * WEB_MERCATOR_ORIGIN)
+
+
+def test_web_mercator_resolution_halves_each_level():
+    from csnav.data.arcgis.tiles import web_mercator_tile_info
+
+    tile_info = web_mercator_tile_info(max_level=20)
+    for level in range(1, 21):
+        assert tile_info.lod_for_level(level).resolution == pytest.approx(
+            tile_info.lod_for_level(level - 1).resolution / 2.0
+        )
+    assert tile_info.max_level == 20

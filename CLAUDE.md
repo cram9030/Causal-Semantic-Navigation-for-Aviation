@@ -44,6 +44,14 @@ loop.** Most "why is it built this way" questions are answered there, not in cod
    slice-to-slice filter loop (`causal_model/filter_loop.py`) is custom code that feeds the
    previous posterior in as evidence and reads the MAP query result back out. Don't try to make
    GCM hold the whole flight's DAG at once.
+7. **Transitions are generated, never authored.** A transition is not known before flight: it may
+   initiate at any arc length along the route being flown, not only at a waypoint. A scenario
+   declares a `TransitionRule` (which hand-offs are permitted, and optionally where they may
+   begin); `trajectory/transition.py` generates the family of Hermite paths it admits. The family
+   — and the region it sweeps — is the object of interest, not any single path: any point between
+   two trajectories is a valid state mid-transition. A return to `x_0` is an ordinary candidate
+   route ending at `x_0`, not a special edge, and composite routes are paths through the
+   transition graph rather than separate declarations.
 
 ## Repository layout
 
@@ -51,7 +59,8 @@ loop.** Most "why is it built this way" questions are answered there, not in cod
 data/acquisition/     San Jose imagery (DPW_ImageryCached2025), CSJ Streets, LIDAR clients — all normalize output to EPSG:4326
 data/ground_truth/    Rasterize CSJ street geometry (+ widths) over imagery tiles into panoptic training labels
 geometry/             WGS84 <-> local ENU conversions; the only place metric geometry math should live
-trajectory/           Trajectory / TrajectorySet / Waypoint definitions, TubeModel, offline ManifestBuilder
+trajectory/           Trajectory / TrajectorySet / Waypoint definitions, TubeModel, generated TransitionModel, offline ManifestBuilder, scenario config
+viz/                  Interactive transition-graph + profile figures (Plotly) and tube/transition/tile/manifest maps (folium)
 segmentation/         Mask2Former training + inference, confusion-matrix uncertainty quantification
 scene_graph/          Per-slice builder: predict -> possible-roads lookup -> Mask2Former match
 causal_model/         Slice DAG spec, DoWhy-GCM mechanism fitting, the slice-chaining filter loop
@@ -105,3 +114,7 @@ Given where the risk actually is (per the integration plan's open-items list):
   an earlier misunderstanding this design deliberately corrected.
 - Don't fit `Predict x(t)` statistically — it's specified as deterministic.
 - Don't hardcode a tube radius anywhere; it's a swept experimental parameter.
+- Don't author transition geometry into a scenario or a `TrajectorySet` — declare the rule and let
+  the model generate it (`TrajectorySet` rejects a `role: transition` trajectory outright).
+- Don't plot graph structure in lat/lon. The transition graph is a structural view; geography
+  belongs on the folium maps.

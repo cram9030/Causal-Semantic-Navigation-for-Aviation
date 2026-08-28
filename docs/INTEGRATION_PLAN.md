@@ -195,8 +195,66 @@ src/csnav/data/
 
 See `docs/phase0_arcgis_tile_client.md` and `docs/phase0_csj_streets_lidar.md`
 for the rationale behind this layout, the discovery-over-hardcoding approach
-the ArcGIS clients take, and why the LIDAR client doesn't. `data/ground_truth/`
-and everything below it in the aspirational tree remain unimplemented (Phase 1+).
+the ArcGIS clients take, and why the LIDAR client doesn't.
+
+**Implementation note (Phase 1):** the trajectory set, tube model, and offline
+manifest builder land under `src/csnav/` for the same reason, alongside a
+visualization package and a `configs/scenarios/` tree holding the versioned
+`T` / `t_p` / `x_0` / CONOPS definitions (tube radius among them, so radius
+sweeps are a config change rather than a code change - see §8):
+
+```
+src/csnav/
+├── trajectory/
+│   ├── waypoints.py         # Waypoint (4D, WGS84), TrajectoryRole
+│   ├── trajectory.py        # Trajectory, TrajectorySet, TransitionRule, TrajectoryWindow
+│   ├── transition.py        # TransitionModel: generates the family a rule admits (see below)
+│   ├── tube.py              # TubeModel: lateral containment + corridor/envelope geometry
+│   ├── coverage.py          # visible footprint (tube + camera reach), TileRef, AGL providers
+│   ├── manifest.py          # LandmarkManifest, ManifestBundle, JSON pinning
+│   ├── manifest_builder.py  # the offline builder (§3.3), and StaticStreetsSource
+│   └── config.py            # Scenario / ConopsConfig, versioned YAML loading
+├── geometry/
+│   ├── fov.py               # FieldOfView -> ground footprint extents
+│   ├── camera.py            # SensorPose, AttitudeMargin, Camera -> ground reach
+│   └── shapes.py            # WGS84 <-> ENU conversion for whole shapely geometries
+└── viz/
+    ├── graph_view.py        # Plotly: the transition graph, permitted routes, profiles
+    └── map_view.py          # folium: corridors, transition families, tiles, manifests
+```
+
+**Refinement to §3.2 (Phase 1):** transition corridors are *generated*, not
+authored. A transition is not known before flight - it may initiate at any arc
+length along the route being flown, not only at a waypoint - so a scenario
+declares a `TransitionRule` (which hand-offs are permitted, and optionally the
+arc-length window in which one may begin) and `TransitionModel` generates the
+family of paths that rule admits: initiation anywhere in the window, arrival at
+the first target waypoint ahead of where the initiation point projects onto the
+target's ground track, and a cubic Hermite spline between them matching both
+routes' headings. The Hermite is a placeholder for a dynamics model. The
+*family*, not any single path, is the object of interest: initiation is
+continuous, so the region the family sweeps is the set of positions the
+aircraft may legitimately occupy while transitioning.
+
+Two consequences worth recording. A **return to `x_0`** is an ordinary
+candidate trajectory whose last waypoint is `x_0` (one per outbound route),
+reached by the same machinery - not a special kind of edge. And **composite
+routes need no declaration**: "fly `t_p`, divert to an alternate, then take
+that alternate's return" is a path through the transition graph, enumerated by
+`TrajectorySet.route_paths()`.
+
+**Refinement to §3.3/§3.4 (Phase 1):** the sensor is a `Camera` - a field of
+view plus a `SensorPose` (mounting relative to the body frame; nadir for the
+first prototype) plus an `AttitudeMargin` bounding how far off level the
+aircraft may be, with a larger allowance near waypoints where the turns are.
+Manifest and tile footprints are sized from the camera's worst-case ground
+reach across a window rather than from the cone angle alone. The margin
+defaults to zero, so the first proof of concept behaves as if the aircraft were
+level.
+
+`data/ground_truth/`, `segmentation/`, `scene_graph/`, `causal_model/`,
+`baseline_slam/` and `eval/` remain unimplemented (Phase 2+). See
+`docs/phase1_trajectory_manifests.md`.
 
 ---
 
