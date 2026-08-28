@@ -8,8 +8,6 @@ latitudes and longitudes.
 
 from __future__ import annotations
 
-import pytest
-
 from csnav.trajectory.trajectory import X0_NODE, TrajectorySet, TransitionRule
 from csnav.viz.graph_view import (
     layered_layout,

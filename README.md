@@ -208,7 +208,7 @@ Writes, into `--output-dir` - all of it self-contained, interactive HTML:
 | --- | --- |
 | `trajectory_graph.html` | The **structural** view: `T` as a transition graph (routes as nodes, permitted hand-offs as edges, `x_0` as the entry), the routes those rules permit, and one arc-length profile per route showing height above ground, the tube radius, the camera's ground reach, and the manifest window boundaries. Node positions are graph layers, deliberately not geography - that is the map's job. |
 | `trajectory_set.html` | The spatial view: every route with its tube and visible footprint, and every transition family with the region it can reach, over San Jose imagery. |
-| `trajectory_<id>.html` | One map per route: its tube at the configured radius, the per-window visible footprints, and the imagery tiles those footprints cover. |
+| `trajectory_<id>.html` | One map per route: its tube at the configured radius, the per-window visible footprints, and the imagery tiles those footprints cover. Windows overlap, so each is its own layer with a **window selector** panel - see below. |
 | `transition_<source>__<target>.html` | One map per transition rule: every sampled hand-off, where each initiates on the source, the waypoint it rejoins at, and the region the family sweeps. |
 
 #### Options
@@ -229,6 +229,27 @@ Every element on the maps is a toggleable layer, and hovering a corridor,
 transition path, window footprint, or tile shows the numbers behind it (window
 id, arc-length span, max AGL, camera ground reach, initiation arc length,
 arrival waypoint, turn angles, tile `level/row/col`).
+
+#### Isolating manifest windows
+
+A trajectory's manifest windows overlap - adjacent ones share a boundary and
+each corridor is round-capped - so all of them at once reads as a chain of
+blobs. Any map that draws windows therefore puts each on its own layer and adds
+a **window selector** panel (top right) rather than listing them in folium's
+flat layer control:
+
+- expand a trajectory to see its windows, each labelled with its index and
+  arc-length span;
+- tick individual windows, or use `all` / `none` per trajectory;
+- hit `solo` on a window to isolate it and hide every other window.
+
+Where a window carries several kinds of geometry - its footprint, its candidate
+roads, its intersections, its imagery tiles - those appear as **category**
+checkboxes across the top of the panel and apply to every window at once. A
+layer is drawn when its window is selected *and* its category is enabled, so
+"every window's roads with no footprints" and "just window 3, everything about
+it" are both a click or two. Consecutive windows also alternate fill and dash so
+the sequence stays countable when they are all shown.
 
 ### What the CONOPS parameters mean
 
@@ -269,6 +290,13 @@ see, queries CSJ Streets against that envelope, clips the returned centerlines
 to it, derives their intersections, and records the imagery tiles the window
 covers. The result is one pinned JSON bundle - the runtime "possible roads"
 lookup reads it and never re-queries CSJ Streets.
+
+`--map` writes a review map of the built bundle, with the window selector
+described above: expand a trajectory, solo a window, and see exactly what that
+window's manifest covers. Pass `--map-landmarks` to include each window's
+candidate roads and intersections as further categories (off by default - across
+a whole bundle that is a lot of geometry, and the per-trajectory
+`manifest_map` view is the one for inspecting landmarks closely).
 
 Pass `--streets-geojson` to build from an archived pull written by
 `scripts/fetch_csj_streets.py` instead of the live layer; prefer that when

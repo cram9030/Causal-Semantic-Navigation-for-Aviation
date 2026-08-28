@@ -131,23 +131,83 @@ def test_trajectory_map_tile_layer_matches_the_coverage_calculation(due_east, tu
         due_east, tube, conops.window_length, camera=conops.camera, tile_level=16
     ).get_root().render()
 
-    assert f"imagery tiles in view (level 16, {len(expected)})" in html
+    assert f"tiles L16 ({len(expected)} distinct)" in html
     assert f"imagery tile {expected[0].key}" in html
 
 
-def test_trajectory_map_without_a_tile_level_draws_no_tile_layer(due_east, tube, conops):
+def test_trajectory_map_without_a_tile_level_draws_no_tile_category(due_east, tube, conops):
     html = trajectory_map(due_east, tube, conops.window_length).get_root().render()
-    assert "imagery tiles in view" not in html
+    assert "tiles L" not in html
+
+
+def test_trajectory_map_gives_every_window_its_own_selectable_layer(due_east, tube, conops):
+    """Windows overlap, so each needs its own layer for the selector to isolate it."""
+    html = trajectory_map(due_east, tube, conops.window_length, camera=conops.camera).get_root().render()
+    windows = due_east.windows(conops.window_length)
+
+    assert "csnavWindowSelector(" in html
+    for window in windows:
+        assert f'id: "{window.window_id}"' in html
+    # Window layers are driven by the selector, not listed in folium's flat control.
+    assert html.count('id: "') >= len(windows)
+
+
+def test_window_layers_stay_out_of_foliums_own_layer_control(due_east, tube, conops):
+    fmap = trajectory_map(due_east, tube, conops.window_length, camera=conops.camera)
+    controlled = {
+        child.layer_name
+        for child in fmap._children.values()
+        if getattr(child, "control", False) and hasattr(child, "layer_name")
+    }
+    for window in due_east.windows(conops.window_length):
+        assert window.window_id not in controlled
+    assert any("centerline" in name for name in controlled)
+
+
+def test_consecutive_windows_are_styled_differently(due_east, tube, conops):
+    """A run of identical overlapping corridors reads as blobs; alternating breaks it up."""
+    html = trajectory_map(due_east, tube, conops.window_length, camera=conops.camera).get_root().render()
+    assert '"dashArray": "7,5"' in html or '"dashArray": null' in html
 
 
 def test_manifest_map_draws_the_pinned_landmarks(due_east, bundle):
     manifests = bundle.for_trajectory("due_east")
     html = manifest_map(due_east, manifests).get_root().render()
 
-    assert "candidate roads (manifest)" in html
-    assert "intersections (manifest)" in html
     assert "off-track offset" in html
     assert manifests[0].window_id in html
+
+
+def test_manifest_map_offers_a_category_per_kind_of_geometry(due_east, bundle):
+    """Categories cut across windows: footprints only, or every window's roads."""
+    manifests = bundle.for_trajectory("due_east")
+    html = manifest_map(due_east, manifests).get_root().render()
+
+    for key in ("footprint", "roads", "intersections", "tiles"):
+        assert f'{{key: "{key}"' in html
+    assert 'key: "tiles", label: "tiles (' in html
+
+
+def test_manifest_map_keeps_tiles_off_until_asked(due_east, bundle):
+    manifests = bundle.for_trajectory("due_east")
+    off = manifest_map(due_east, manifests).get_root().render()
+    on = manifest_map(due_east, manifests, show_tiles=True).get_root().render()
+
+    assert 'key: "tiles"' in off and "enabled: false}" in off
+    assert 'key: "tiles"' in on and 'key: "tiles", label: "tiles (' in on
+    assert on.count("enabled: false") < off.count("enabled: false")
+
+
+def test_manifest_map_groups_each_windows_layers_together(due_east, bundle):
+    """Soloing a window has to isolate its landmarks too, not just its footprint."""
+    manifests = bundle.for_trajectory("due_east")
+    html = manifest_map(due_east, manifests).get_root().render()
+
+    for manifest in manifests:
+        marker = f'id: "{manifest.window_id}", label:'
+        assert marker in html
+        entry = html[html.index(marker) : html.index(marker) + 600]
+        assert '"footprint":' in entry and '"roads":' in entry
 
 
 def test_manifest_map_refuses_an_empty_manifest_list(due_east):
@@ -160,6 +220,27 @@ def test_bundle_map_groups_layers_by_trajectory(trajectory_set, bundle):
     for trajectory in trajectory_set.trajectories:
         manifests = bundle.for_trajectory(trajectory.id)
         assert f"{trajectory.id} ({len(manifests)} windows" in html
+
+
+def test_bundle_map_gives_the_selector_one_expandable_group_per_trajectory(trajectory_set, bundle):
+    html = bundle_map(trajectory_set, bundle).get_root().render()
+
+    assert "csnavWindowSelector(" in html
+    for trajectory in trajectory_set.trajectories:
+        assert f'{{id: "{trajectory.id}", label: "{trajectory.id}"' in html
+        for manifest in bundle.for_trajectory(trajectory.id):
+            assert f'id: "{manifest.window_id}"' in html
+
+
+def test_bundle_map_leaves_landmarks_out_until_asked(trajectory_set, bundle):
+    """Across a whole bundle that is a lot of geometry, so it is opt-in."""
+    without = bundle_map(trajectory_set, bundle).get_root().render()
+    with_landmarks = bundle_map(trajectory_set, bundle, show_landmarks=True).get_root().render()
+
+    assert 'key: "roads"' not in without
+    assert "off-track offset" not in without
+    assert 'key: "roads"' in with_landmarks
+    assert "off-track offset" in with_landmarks
 
 
 def test_save_map_writes_a_self_contained_html_file(trajectory_set, conops, tmp_path):

@@ -27,7 +27,10 @@ src/csnav/geometry/
 src/csnav/viz/
 ├── style.py             # shared palette so both views agree on colours
 ├── graph_view.py        # Plotly: the transition graph, routes, profiles
-└── map_view.py          # folium: corridors, transition families, tiles, manifests
+├── map_view.py          # folium: corridors, transition families, tiles, manifests
+├── window_selector.py   # the per-window Leaflet control (see "Isolating windows")
+└── static/
+    └── window_selector.js   # its behaviour, linted and unit-tested under node
 
 configs/scenarios/san_jose_downtown.yaml   # the pilot T / t_p / x_0 / CONOPS
 scripts/visualize_trajectories.py          # render the report and maps
@@ -276,6 +279,45 @@ view, over real imagery.
   reach), and the imagery tiles those footprints cover.
 * `manifest_map` / `bundle_map` — a built manifest drawn where it actually
   sits: candidate roads with their off-track offsets, intersections, tiles.
+
+### Isolating windows
+
+Windows overlap by design — adjacent ones meet at a shared boundary and every
+corridor is round-capped — so drawing a trajectory's whole run of them at once
+in one colour produces a chain of blobs rather than a readable sequence. Two
+things address that.
+
+**Each window is its own layer, driven by a `WindowSelector` panel.** Folium's
+own layer control is flat, so listing 36 window layers there would only move the
+problem; the selector is a collapsible tree instead. Expand a trajectory to get
+its windows, each labelled with its index and arc-length span; tick the ones you
+want, use `all`/`none` per trajectory, or hit `solo` on a window to see it
+alone. Window layers are created with `control=False` so they stay out of
+folium's control, which keeps the tube, centerline, and basemap toggles there
+uncluttered.
+
+Where a window carries more than one kind of geometry, those are **categories** —
+footprints, candidate roads, intersections, imagery tiles — toggled across all
+windows at once from a row at the top of the panel. A layer is drawn when its
+window is selected *and* its category is enabled, so "every window's roads, no
+footprints" and "window 3, everything about it" are both one or two clicks.
+`manifest_map` groups a window's landmarks with its footprint for exactly this
+reason: soloing a window isolates what that window's manifest actually contains,
+not just where it sits.
+
+**Consecutive windows alternate their styling.** Even with everything shown, odd
+windows are drawn with a lighter fill and a dashed outline (`_window_style`), and
+where colour is not already carrying "which trajectory" they also alternate
+between two shades (`viz.style.window_shade`). That makes a run of windows
+countable rather than blobby.
+
+The control's behaviour is a real `.js` file rather than a template string, so
+it can be linted and unit-tested: `tests/viz/test_window_selector.js` covers
+solo, `all`/`none`, and the window x category mask under node, and pytest runs
+that suite (skipping if node is absent). Its spec is emitted as a JavaScript
+object literal rather than JSON, because layer references have to come out as
+the bare variable names folium declared — every string in it is escaped so a
+label can break out neither of the literal nor of the `<script>` element.
 
 The San Jose DPW 2025 imagery cache is available as a basemap layer (off by
 default in the layer control), addressed through the same `/tile/{z}/{y}/{x}`

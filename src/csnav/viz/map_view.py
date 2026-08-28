@@ -26,7 +26,7 @@ growth, tile selection) is already done by :mod:`csnav.trajectory.tube` and
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
 from shapely.geometry import Polygon
 
@@ -45,7 +45,13 @@ from csnav.trajectory.coverage import (
     visible_footprint,
 )
 from csnav.trajectory.manifest import LandmarkManifest, ManifestBundle
-from csnav.trajectory.trajectory import X0_NODE, Trajectory, TrajectorySet, TransitionRule
+from csnav.trajectory.trajectory import (
+    X0_NODE,
+    Trajectory,
+    TrajectorySet,
+    TrajectoryWindow,
+    TransitionRule,
+)
 from csnav.trajectory.transition import TransitionFamily, TransitionModel
 from csnav.trajectory.tube import TubeModel
 from csnav.trajectory.waypoints import Waypoint
@@ -56,7 +62,9 @@ from csnav.viz.style import (
     TILE_COLOR,
     TRANSITION_COLOR,
     color_for,
+    window_shade,
 )
+from csnav.viz.window_selector import WindowCategory, WindowGroup, WindowLayers, WindowSelector
 
 #: San Jose's own cached aerial imagery, as an XYZ-addressable overlay. This is
 #: the same cache :class:`csnav.data.arcgis.client.ArcGISTileClient` fetches
@@ -155,7 +163,14 @@ def _add_waypoints(group, trajectory: Trajectory, color: str) -> None:
         ).add_to(group)
 
 
-def _add_corridor(group, corridor: Polygon, color: str, tooltip: str, fill_opacity: float = 0.15) -> None:
+def _add_corridor(
+    group,
+    corridor: Polygon,
+    color: str,
+    tooltip: str,
+    fill_opacity: float = 0.15,
+    dash_array: str | None = None,
+) -> None:
     folium = _folium()
     for part in _polygons(corridor):
         folium.Polygon(
@@ -166,8 +181,25 @@ def _add_corridor(group, corridor: Polygon, color: str, tooltip: str, fill_opaci
             fill=True,
             fill_color=color,
             fill_opacity=fill_opacity,
+            dash_array=dash_array,
             tooltip=tooltip,
         ).add_to(group)
+
+
+def _window_style(index: int) -> dict[str, Any]:
+    """Fill/outline style that alternates between consecutive windows.
+
+    Adjacent windows overlap at their shared boundary and each corridor is
+    round-capped, so a uniform style makes a run of windows read as one chain of
+    blobs. Alternating the fill weight and dashing the odd ones keeps the
+    sequence separable even with all of them shown - a per-window colour is not
+    available where the colour already means "which trajectory".
+    """
+    return (
+        {"fill_opacity": 0.16, "dash_array": None}
+        if index % 2 == 0
+        else {"fill_opacity": 0.05, "dash_array": "7,5"}
+    )
 
 
 def _add_x0(fmap, x0: Waypoint) -> None:
@@ -395,6 +427,11 @@ def transition_map(
     return fmap
 
 
+def _window_label(window: TrajectoryWindow) -> str:
+    """Compact row label for the window selector: index and arc-length span."""
+    return f"{window.index:04d} \u00b7 {window.start_distance:,.0f}-{window.end_distance:,.0f} m"
+
+
 def trajectory_map(
     trajectory: Trajectory,
     tube: TubeModel,
@@ -408,21 +445,19 @@ def trajectory_map(
 ):
     """Map one trajectory in detail: tube radius, per-window footprints, and tiles in view.
 
-    Layers, all independently toggleable:
+    The tube corridor and the centerline sit in folium's own layer control. The
+    windows do not: each gets its own layer, managed by a
+    :class:`~csnav.viz.window_selector.WindowSelector` panel so a single window
+    can be isolated. Drawn all at once they overlap at every shared boundary,
+    which is why they also alternate between two shades.
 
-    * the centerline and its waypoints;
-    * the tube corridor at ``tube.radius`` meters;
-    * one visible footprint per manifest window (``window_length`` meters of arc
-      length each), each tooltipped with its window id, arc-length span, and
-      the AGL and camera ground reach that sized it;
-    * the imagery tiles those footprints cover, when ``tile_info``/``tile_level``
-      are given.
-
-    ``tile_level`` addresses the service's own cache levels. Pass the live
-    service's :class:`~csnav.data.arcgis.models.TileInfo` where you have it;
-    with ``tile_level`` set and ``tile_info`` left out, the standard EPSG:3857
-    scheme (:func:`csnav.data.arcgis.tiles.web_mercator_tile_info`) is assumed,
-    which is the scheme San Jose's caches are published against.
+    Each window's tooltip carries its window id, arc-length span, and the AGL
+    and camera ground reach that sized it. ``tile_level`` addresses the
+    service's own cache levels; pass the live service's
+    :class:`~csnav.data.arcgis.models.TileInfo` where you have it, and with
+    ``tile_level`` set and ``tile_info`` left out the standard EPSG:3857 scheme
+    (:func:`csnav.data.arcgis.tiles.web_mercator_tile_info`) is assumed, which
+    is the scheme San Jose's caches are published against.
     """
     folium = _folium()
     if tile_level is not None and tile_info is None:
@@ -440,9 +475,8 @@ def trajectory_map(
 
     windows = trajectory.windows(window_length)
     footprints: list[Polygon] = []
-    window_group = folium.FeatureGroup(
-        name=f"visible footprint per window ({len(windows)} x {window_length:.0f} m)", show=True
-    )
+    window_layers: list[WindowLayers] = []
+
     for window in windows:
         footprint = visible_footprint(
             trajectory, tube, window=window, camera=camera, agl_provider=agl_provider
@@ -450,10 +484,16 @@ def trajectory_map(
         footprints.append(footprint)
         agl = max_agl(trajectory, window, agl_provider)
         extra = 0.0 if camera is None else max_ground_reach(trajectory, window, camera, agl_provider)
+        detail = (
+            f"arc {window.start_distance:.0f}-{window.end_distance:.0f} m, "
+            f"max AGL {agl:.0f} m, search radius {tube.radius + extra:.0f} m"
+        )
+
+        footprint_group = folium.FeatureGroup(name=window.window_id, control=False, show=True)
         _add_corridor(
-            window_group,
+            footprint_group,
             footprint,
-            "#009E73",
+            window_shade(window.index),
             (
                 f"window {window.window_id}<br>"
                 f"arc {window.start_distance:.0f}-{window.end_distance:.0f} m, "
@@ -461,22 +501,40 @@ def trajectory_map(
                 f"max AGL {agl:.0f} m, camera ground reach {extra:.0f} m<br>"
                 f"search radius {tube.radius + extra:.0f} m"
             ),
-            fill_opacity=0.08,
+            **_window_style(window.index),
         )
-    window_group.add_to(fmap)
+        footprint_group.add_to(fmap)
+        layers: dict[str, Any] = {"footprint": footprint_group}
 
+        if tile_info is not None and tile_level is not None:
+            tile_group = folium.FeatureGroup(
+                name=f"{window.window_id} tiles", control=False, show=True
+            )
+            _add_tiles(tile_group, tiles_for_footprint(footprint, tile_info, tile_level, max_tiles=max_tiles))
+            tile_group.add_to(fmap)
+            layers["tiles"] = tile_group
+
+        window_layers.append(
+            WindowLayers(window_id=window.window_id, label=_window_label(window), layers=layers, detail=detail)
+        )
+
+    categories = [WindowCategory("footprint", f"footprints ({len(windows)})")]
     if tile_info is not None and tile_level is not None:
-        tiles = _tiles_for_windows(footprints, tile_info, tile_level, max_tiles)
-        tile_group = folium.FeatureGroup(name=f"imagery tiles in view (level {tile_level}, {len(tiles)})", show=True)
-        _add_tiles(tile_group, tiles)
-        tile_group.add_to(fmap)
+        distinct = len(_tiles_for_windows(footprints, tile_info, tile_level, max_tiles))
+        categories.append(WindowCategory("tiles", f"tiles L{tile_level} ({distinct} distinct)"))
 
     path_group = folium.FeatureGroup(name=f"{trajectory.id} centerline", show=True)
     _add_centerline(path_group, trajectory, color)
     _add_waypoints(path_group, trajectory, color)
     path_group.add_to(fmap)
 
-    folium.LayerControl(collapsed=False).add_to(fmap)
+    folium.LayerControl(collapsed=False, position="topleft").add_to(fmap)
+    WindowSelector(
+        groups=[WindowGroup(id=trajectory.id, label=trajectory.id, color=color, windows=tuple(window_layers))],
+        categories=categories,
+        title=f"Windows ({window_length:.0f} m)",
+    ).add_to(fmap)
+
     # Fit to the widest thing drawn - the FOV-grown footprint, not the bare tube.
     outer_margin = (
         0.0 if camera is None else max_ground_reach(trajectory, None, camera, agl_provider)
@@ -493,11 +551,101 @@ def _tiles_for_windows(
     )
 
 
+def _add_manifest_roads(group, manifest: LandmarkManifest) -> None:
+    folium = _folium()
+    for road in manifest.candidate_roads:
+        for part in road.parts:
+            folium.PolyLine(
+                [[lat, lon] for lon, lat in part],
+                color=LANDMARK_COLOR,
+                weight=3,
+                opacity=0.9,
+                tooltip=(
+                    f"{road.name or road.segment_id}<br>"
+                    f"segment {road.segment_id}<br>"
+                    f"window {manifest.window_id}<br>"
+                    f"off-track offset {road.offset:.0f} m"
+                    + (f"<br>width {road.width:.1f} m" if road.width else "")
+                ),
+            ).add_to(group)
+
+
+def _add_manifest_intersections(group, manifest: LandmarkManifest) -> None:
+    folium = _folium()
+    for junction in manifest.intersections:
+        folium.CircleMarker(
+            location=[junction.lat, junction.lon],
+            radius=3,
+            color=INTERSECTION_COLOR,
+            fill=True,
+            fill_opacity=1.0,
+            weight=1,
+            tooltip=f"intersection of {', '.join(junction.segment_ids)} ({manifest.window_id})",
+        ).add_to(group)
+
+
+def _manifest_window_layers(
+    fmap,
+    manifest: LandmarkManifest,
+    color: str,
+    categories: Sequence[str],
+    shown: Mapping[str, bool],
+) -> WindowLayers:
+    """Build one window's per-category layers and register them on the map.
+
+    Layers are created with ``control=False``: they belong to the
+    :class:`~csnav.viz.window_selector.WindowSelector`, not to folium's flat
+    layer control, which is where 36 window layers would be unreadable.
+    """
+    folium = _folium()
+    window = manifest.window
+    layers: dict[str, Any] = {}
+
+    for category in categories:
+        group = folium.FeatureGroup(
+            name=f"{manifest.window_id} {category}", control=False, show=shown.get(category, True)
+        )
+        if category == "footprint":
+            _add_corridor(
+                group,
+                manifest.footprint,
+                color,
+                (
+                    f"window {manifest.window_id}<br>"
+                    f"tube {manifest.tube_radius:.0f} m, max AGL {manifest.max_agl:.0f} m, "
+                    f"camera reach {manifest.ground_reach:.0f} m<br>"
+                    f"{len(manifest.candidate_roads)} roads, "
+                    f"{len(manifest.intersections)} intersections, {len(manifest.tiles)} tiles"
+                ),
+                **_window_style(window.index),
+            )
+        elif category == "roads":
+            _add_manifest_roads(group, manifest)
+        elif category == "intersections":
+            _add_manifest_intersections(group, manifest)
+        elif category == "tiles":
+            _add_tiles(group, manifest.tiles)
+        else:
+            raise ValueError(f"unknown manifest layer category: {category!r}")
+        group.add_to(fmap)
+        layers[category] = group
+
+    return WindowLayers(
+        window_id=manifest.window_id,
+        label=_window_label(window),
+        layers=layers,
+        detail=(
+            f"arc {window.start_distance:.0f}-{window.end_distance:.0f} m, "
+            f"{len(manifest.candidate_roads)} roads, {len(manifest.intersections)} intersections"
+        ),
+    )
+
+
 def manifest_map(
     trajectory: Trajectory,
     manifests: Iterable[LandmarkManifest],
     include_imagery: bool = True,
-    show_tiles: bool = True,
+    show_tiles: bool = False,
 ):
     """Map a built manifest over its trajectory: candidate roads, intersections, tiles.
 
@@ -506,6 +654,14 @@ def manifest_map(
     the "did the offline build pick up the right streets?" view - the pinned
     landmark set drawn where it actually sits, rather than a count in a log
     line.
+
+    Everything is per window rather than pooled by kind, and a
+    :class:`~csnav.viz.window_selector.WindowSelector` panel drives it: solo a
+    window to see just its footprint and just the landmarks pinned for it. The
+    category checkboxes at the top of that panel cut across windows, so
+    "footprints only" and "every window's roads" are both one click. Imagery
+    tiles are a category too, off by default - one window's tile set is a lot of
+    rectangles.
     """
     folium = _folium()
     manifests = list(manifests)
@@ -519,62 +675,30 @@ def manifest_map(
         include_imagery=include_imagery,
     )
 
-    footprint_group = folium.FeatureGroup(name="window footprints", show=True)
-    roads_group = folium.FeatureGroup(name="candidate roads (manifest)", show=True)
-    junction_group = folium.FeatureGroup(name="intersections (manifest)", show=True)
-    tile_group = folium.FeatureGroup(name="imagery tiles in view", show=show_tiles)
-
-    tile_count = 0
-    for manifest in manifests:
-        _add_corridor(
-            footprint_group,
-            manifest.footprint,
-            "#009E73",
-            (
-                f"window {manifest.window_id}<br>"
-                f"tube {manifest.tube_radius:.0f} m, max AGL {manifest.max_agl:.0f} m<br>"
-                f"{len(manifest.candidate_roads)} roads, {len(manifest.intersections)} intersections"
-            ),
-            fill_opacity=0.06,
-        )
-        for road in manifest.candidate_roads:
-            for part in road.parts:
-                folium.PolyLine(
-                    [[lat, lon] for lon, lat in part],
-                    color=LANDMARK_COLOR,
-                    weight=3,
-                    opacity=0.9,
-                    tooltip=(
-                        f"{road.name or road.segment_id}<br>"
-                        f"segment {road.segment_id}<br>"
-                        f"off-track offset {road.offset:.0f} m"
-                        + (f"<br>width {road.width:.1f} m" if road.width else "")
-                    ),
-                ).add_to(roads_group)
-        for junction in manifest.intersections:
-            folium.CircleMarker(
-                location=[junction.lat, junction.lon],
-                radius=3,
-                color=INTERSECTION_COLOR,
-                fill=True,
-                fill_opacity=1.0,
-                weight=1,
-                tooltip=f"intersection of {', '.join(junction.segment_ids)}",
-            ).add_to(junction_group)
-        tile_count += _add_tiles(tile_group, manifest.tiles)
-
-    footprint_group.add_to(fmap)
-    tile_group.layer_name = f"imagery tiles in view ({tile_count})"
-    tile_group.add_to(fmap)
-    roads_group.add_to(fmap)
-    junction_group.add_to(fmap)
+    categories = ["footprint", "roads", "intersections", "tiles"]
+    shown = {"footprint": True, "roads": True, "intersections": True, "tiles": show_tiles}
+    window_layers = [
+        _manifest_window_layers(fmap, manifest, window_shade(manifest.window.index), categories, shown)
+        for manifest in manifests
+    ]
 
     path_group = folium.FeatureGroup(name=f"{trajectory.id} centerline", show=True)
     _add_centerline(path_group, trajectory, color)
     _add_waypoints(path_group, trajectory, color)
     path_group.add_to(fmap)
 
-    folium.LayerControl(collapsed=False).add_to(fmap)
+    folium.LayerControl(collapsed=False, position="topleft").add_to(fmap)
+    WindowSelector(
+        groups=[WindowGroup(id=trajectory.id, label=trajectory.id, color=color, windows=tuple(window_layers))],
+        categories=[
+            WindowCategory("footprint", "footprints"),
+            WindowCategory("roads", f"roads ({sum(len(m.candidate_roads) for m in manifests)})"),
+            WindowCategory("intersections", f"junctions ({sum(len(m.intersections) for m in manifests)})"),
+            WindowCategory("tiles", f"tiles ({len(merge_tiles(m.tiles for m in manifests))})", enabled=show_tiles),
+        ],
+        title=f"Manifest windows ({len(manifests)})",
+    ).add_to(fmap)
+
     _fit(fmap, _envelope_of(manifests))
     return fmap
 
@@ -594,8 +718,22 @@ def bundle_map(
     trajectory_set: TrajectorySet,
     bundle: ManifestBundle,
     include_imagery: bool = True,
+    show_landmarks: bool = False,
 ):
-    """Map every trajectory's pinned manifest in one figure, one layer group per trajectory."""
+    """Map every trajectory's pinned manifest in one figure, window by window.
+
+    Centerlines stay in folium's own layer control, one per trajectory. The
+    windows are managed by a
+    :class:`~csnav.viz.window_selector.WindowSelector` panel instead: expand a
+    trajectory to get its windows, tick the ones you want, or solo one. Windows
+    overlap at every shared boundary, so with all of them shown at once the
+    fills alternate between two opacities to keep the sequence readable.
+
+    ``show_landmarks`` adds each window's candidate roads and intersections as
+    further categories, off by default - across a whole bundle that is a lot of
+    geometry, and :func:`manifest_map` is the view for inspecting one
+    trajectory's landmarks closely.
+    """
     folium = _folium()
     bounds = trajectory_set.bounds
     fmap = base_map(
@@ -603,29 +741,49 @@ def bundle_map(
         include_imagery=include_imagery,
     )
     order = tuple(t.id for t in trajectory_set.trajectories)
+    categories = ["footprint"] + (["roads", "intersections"] if show_landmarks else [])
+    shown = {"footprint": True, "roads": False, "intersections": False}
 
+    groups: list[WindowGroup] = []
     for trajectory in trajectory_set.trajectories:
         manifests = bundle.for_trajectory(trajectory.id)
         if not manifests:
             continue
         color = color_for(trajectory.id, trajectory.role, order)
-        group = folium.FeatureGroup(
+
+        path_group = folium.FeatureGroup(
             name=f"{trajectory.id} ({len(manifests)} windows, tube {manifests[0].tube_radius:.0f} m)",
             show=True,
         )
-        for manifest in manifests:
-            _add_corridor(
-                group,
-                manifest.footprint,
-                color,
-                f"{manifest.window_id}: {len(manifest.candidate_roads)} roads, {len(manifest.tiles)} tiles",
-                fill_opacity=0.07,
+        _add_centerline(path_group, trajectory, color)
+        path_group.add_to(fmap)
+
+        groups.append(
+            WindowGroup(
+                id=trajectory.id,
+                label=trajectory.id,
+                color=color,
+                windows=tuple(
+                    _manifest_window_layers(fmap, manifest, color, categories, shown)
+                    for manifest in manifests
+                ),
             )
-        _add_centerline(group, trajectory, color)
-        group.add_to(fmap)
+        )
+
+    selector_categories = [WindowCategory("footprint", "footprints")]
+    if show_landmarks:
+        selector_categories += [
+            WindowCategory("roads", "candidate roads", enabled=False),
+            WindowCategory("intersections", "intersections", enabled=False),
+        ]
 
     _add_x0(fmap, trajectory_set.x0)
-    folium.LayerControl(collapsed=False).add_to(fmap)
+    folium.LayerControl(collapsed=False, position="topleft").add_to(fmap)
+    WindowSelector(
+        groups=groups,
+        categories=selector_categories,
+        title=f"Manifest windows ({sum(len(g.windows) for g in groups)})",
+    ).add_to(fmap)
     _fit(fmap, trajectory_set.bounds)
     return fmap
 

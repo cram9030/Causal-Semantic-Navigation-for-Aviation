@@ -36,6 +36,17 @@ X0_COLOR = "#111111"
 #: Colour for imagery tile footprints.
 TILE_COLOR = "#444444"
 
+#: Alternating fills for consecutive manifest windows. Adjacent windows share a
+#: boundary and each corridor is round-capped, so a single colour makes the
+#: overlaps read as a chain of blobs; alternating between two shades keeps the
+#: sequence legible even with every window shown at once.
+WINDOW_SHADES = ("#009E73", "#0072B2")
+
+
+def window_shade(index: int) -> str:
+    """Fill colour for the ``index``-th window of a trajectory."""
+    return WINDOW_SHADES[index % len(WINDOW_SHADES)]
+
 #: Colour for manifest landmarks (candidate roads) and their intersections.
 LANDMARK_COLOR = "#F0C808"
 INTERSECTION_COLOR = "#FFFFFF"

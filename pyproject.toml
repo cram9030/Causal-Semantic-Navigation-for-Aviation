@@ -50,5 +50,10 @@ ml = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The window selector's behaviour lives in a real .js file (so it can be linted
+# and unit-tested under node) that gets inlined into every map it is added to.
+[tool.setuptools.package-data]
+"csnav.viz" = ["static/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

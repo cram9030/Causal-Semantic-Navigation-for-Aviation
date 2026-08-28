@@ -103,6 +103,11 @@ def main() -> None:
         help="query CSJ Streets per window instead of once per trajectory (slower, tighter bounding boxes)",
     )
     parser.add_argument("--map", type=Path, default=None, help="also write a folium review map of the built bundle")
+    parser.add_argument(
+        "--map-landmarks",
+        action="store_true",
+        help="include each window's roads and intersections in --map (off by default; a lot of geometry)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="enable DEBUG-level logging")
     args = parser.parse_args()
 
@@ -146,7 +151,12 @@ def main() -> None:
     if args.map:
         from csnav.viz.map_view import bundle_map, save_map
 
-        logger.info("wrote %s", save_map(bundle_map(scenario.trajectory_set, bundle), args.map))
+        logger.info(
+            "wrote %s",
+            save_map(
+                bundle_map(scenario.trajectory_set, bundle, show_landmarks=args.map_landmarks), args.map
+            ),
+        )
 
 
 if __name__ == "__main__":
