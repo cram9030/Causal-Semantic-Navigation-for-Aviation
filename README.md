@@ -15,11 +15,25 @@ from `geo.sanjoseca.gov`'s ArcGIS Server:
 
 ### Setup
 
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) — installs
+resolve against the committed `uv.lock`, so every contributor and the dev
+container get the identical, reproducible dependency graph rather than
+whatever pip's resolver picks for a loose `>=` bound that day.
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
+
+This creates `.venv` and installs the project into it editable, matching
+`pip install -e ".[dev]"`. Activate it as usual (`source .venv/bin/activate`)
+or prefix commands with `uv run` (e.g. `uv run pytest`) to skip activation.
+
+Don't have `uv` installed? See the
+[installation docs](https://docs.astral.sh/uv/getting-started/installation/)
+— it's a single static binary, no Python bootstrap required. The project's
+dependency metadata is still standard `pyproject.toml`, so `pip install
+-e ".[dev]"` in a regular venv continues to work if you'd rather not adopt
+uv; you just lose the lockfile's pinned, reproducible versions.
 
 #### Dev container (GPU-ready)
 
@@ -35,7 +49,7 @@ Phase 0/1 work; the container just runs CPU-only in that case.
 Open the repo in VS Code and choose **Dev Containers: Reopen in Container**,
 or run `devcontainer up` from the [Dev Containers CLI](https://github.com/devcontainers/cli).
 On first build, `.devcontainer/post-create.sh` installs the project
-(`pip install -e ".[dev,ml]"`) and prints whether a GPU is visible.
+(`uv sync --extra dev --extra ml`) and prints whether a GPU is visible.
 
 ### Tests
 

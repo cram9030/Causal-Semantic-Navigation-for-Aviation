@@ -43,14 +43,17 @@ RUN groupadd --gid "${USER_GID}" "${USERNAME}" \
     && echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
     && chmod 0440 /etc/sudoers.d/${USERNAME}
 
+# uv: single static binary, used in place of pip/venv for dependency
+# resolution and installs — see uv.lock for the pinned, reproducible graph.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
 # Isolated venv (owned by the non-root user) rather than the system
-# site-packages, so `postCreateCommand` can `pip install` without sudo.
+# site-packages, so `postCreateCommand` can install into it without sudo.
 ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv ${VIRTUAL_ENV} && chown -R ${USERNAME}:${USERNAME} ${VIRTUAL_ENV}
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 USER ${USERNAME}
-RUN pip install --no-cache-dir --upgrade pip
 
 ENV DEBIAN_FRONTEND=dialog
 WORKDIR /workspaces
