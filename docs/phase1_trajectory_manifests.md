@@ -228,6 +228,34 @@ Intersections are derived from the manifest's own clipped centerlines (STRtree
 pairwise, snapped at 2 m), so road and intersection landmarks — the two classes
 Mask2Former will detect separately in §3.4 — both come out of the same build.
 
+### Transitions get manifests too, over the family, not one path
+
+The aircraft can be anywhere in the region a transition family sweeps while a
+hand-off is under way (see "Transitions are generated, not authored" above),
+so a manifest that only covered candidate routes would leave the "possible
+roads" lookup with nothing to return for every slice flown during a diversion.
+`ManifestBuilder.build_set` covers transitions by default (`include_transitions
+=True`): for every rule other than an entry out of `x_0`, it generates the
+family via `conops.transition` and calls `build_transition_family`, which
+builds ordinary per-window manifests over **each sampled path's own arc
+length** — reusing exactly the window/clip/intersect/tile machinery a candidate
+route gets, just applied once per sampled initiation point rather than once per
+route.
+
+Streets are queried **once per family**, not once per path: the query envelope
+is the union of every sampled path's tube, grown by the camera's worst-case
+reach across all of them, so one request covers windows for a dozen paths
+instead of issuing a dozen requests for heavily overlapping ground.
+
+A generated path's manifest windows are keyed off its own id — produced by
+`csnav.trajectory.transition.transition_id` as
+`"<source>__<target>__s<initiate_distance>"` — so
+`ManifestBundle.for_transition(source_id, target_id)` finds every window built
+for a rule by matching that prefix, and `transition_path_ids` lists the
+distinct sampled paths it covers. A rule whose family comes back empty (every
+sampled initiation screened out by `max_turn_deg`) is logged and skipped rather
+than treated as an error — there is no region to cover, not a bug.
+
 ### Pinning is a file, not a convention
 
 `ManifestBundle.save` writes plain JSON with GeoJSON geometry: schema version,
@@ -279,6 +307,11 @@ view, over real imagery.
   reach), and the imagery tiles those footprints cover.
 * `manifest_map` / `bundle_map` — a built manifest drawn where it actually
   sits: candidate roads with their off-track offsets, intersections, tiles.
+  `bundle_map` groups transition windows by rule (`"<source> to <target>"`),
+  one row per sampled path labelled by where it initiates, alongside the
+  candidate-route groups — so a manifest built with `build_set`'s default
+  transition coverage is reviewable exactly the way the routes are. Pass
+  `transition_model=conops.transition` to also draw each rule's sampled paths.
 
 ### Isolating windows
 
@@ -445,9 +478,6 @@ one.)
   heading-continuous, and that is all. Turn radius, bank limits, and airspeed
   are not modelled, and the turn-angle screen is a stand-in for them, with the
   limitation noted above.
-* **No manifests over transition families.** `ManifestBuilder.build_set` covers
-  the candidate routes. Building manifests over the region a family sweeps is
-  the obvious next step and is deliberately not done yet.
 * **No variable-radius tubes.** §8 defers segment-dependent radii. The radius
   is per trajectory (with a per-trajectory override), constant along it.
 * **No slice DAG.** `Predict x(t)`, the manifest ∩ FOV(t) lookup at a specific

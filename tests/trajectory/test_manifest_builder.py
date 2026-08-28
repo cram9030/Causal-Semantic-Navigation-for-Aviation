@@ -21,6 +21,7 @@ from shapely.geometry import Point as ShapelyPoint
 from csnav.data.arcgis.streets import StreetSegment
 from csnav.data.arcgis.tiles import web_mercator_tile_info
 from csnav.geometry.local_frame import LocalFrame
+from csnav.trajectory.config import ConopsConfig
 from csnav.trajectory.manifest_builder import ManifestBuilder, StaticStreetsSource
 from csnav.trajectory.tube import TubeModel
 
@@ -202,13 +203,13 @@ def test_tile_scheme_arguments_must_be_supplied_together(streets):
         ManifestBuilder(streets=streets, tile_level=16)
 
 
-def test_build_set_covers_every_trajectory_and_records_its_parameters(streets, trajectory_set, conops):
+def test_build_set_covers_every_route_and_records_its_parameters(streets, trajectory_set, conops):
     builder = ManifestBuilder(streets=streets, tile_info=web_mercator_tile_info(), tile_level=16)
     bundle = builder.build_set(trajectory_set, conops)
 
-    assert {manifest.window.trajectory_id for manifest in bundle.manifests} == {
-        trajectory.id for trajectory in trajectory_set.trajectories
-    }
+    covered = {manifest.window.trajectory_id for manifest in bundle.manifests}
+    for trajectory in trajectory_set.trajectories:
+        assert trajectory.id in covered
     assert bundle.parameters["tube_radius_m"] == conops.tube_radius
     assert bundle.parameters["transition_tube_radius_m"] == conops.transition_tube_radius
     assert bundle.parameters["window_length_m"] == conops.window_length
@@ -218,9 +219,55 @@ def test_build_set_covers_every_trajectory_and_records_its_parameters(streets, t
 
 
 def test_build_set_covers_the_candidate_routes_at_the_conops_radius(streets, trajectory_set, conops):
-    """Manifests are built per candidate route; transition families are Phase 1.5."""
     bundle = ManifestBuilder(streets=streets).build_set(trajectory_set, conops)
-    assert all(manifest.tube_radius == conops.tube_radius for manifest in bundle.manifests)
+    route_manifests = [
+        m
+        for m in bundle.manifests
+        if m.window.trajectory_id in {t.id for t in trajectory_set.trajectories}
+    ]
+    assert route_manifests
+    assert all(manifest.tube_radius == conops.tube_radius for manifest in route_manifests)
+
+
+def test_build_set_also_covers_every_transition_family_by_default(streets, trajectory_set, conops):
+    """This is the point of the change: transitions get manifests too, not just candidates."""
+    bundle = ManifestBuilder(streets=streets).build_set(trajectory_set, conops)
+
+    transition_manifests = bundle.for_transition("due_east", "parallel_north")
+    assert transition_manifests
+    # Every sampled path in the family contributed at least one window.
+    family = conops.transition.family(
+        trajectory_set.by_id("due_east"),
+        trajectory_set.by_id("parallel_north"),
+        trajectory_set.transitions[1],
+    )
+    assert len(bundle.transition_path_ids("due_east", "parallel_north")) == len(family)
+    assert all(manifest.tube_radius == conops.transition_tube_radius for manifest in transition_manifests)
+
+
+def test_build_set_can_skip_transitions(streets, trajectory_set, conops):
+    bundle = ManifestBuilder(streets=streets).build_set(trajectory_set, conops, include_transitions=False)
+    assert bundle.for_transition("due_east", "parallel_north") == ()
+
+
+def test_build_set_skips_an_empty_family_without_raising(streets, due_east, orthogonal, model):
+    from csnav.trajectory.trajectory import TrajectorySet, TransitionRule
+    from csnav.trajectory.transition import TransitionModel
+
+    trajectory_set = TrajectorySet(
+        id="degenerate",
+        trajectories=(due_east, orthogonal),
+        primary_id="due_east",
+        x0=due_east.waypoints[0],
+        transitions=(TransitionRule(source="due_east", target="orthogonal", max_turn_deg=1.0),),
+    )
+    conops = ConopsConfig(
+        tube_radius=200.0, window_length=1000.0, transition=TransitionModel(samples=5, max_turn_deg=1.0)
+    )
+    bundle = ManifestBuilder(streets=streets).build_set(trajectory_set, conops)
+
+    assert bundle.for_transition("due_east", "orthogonal") == ()
+    assert bundle.for_trajectory("due_east")  # the candidates are still covered
 
 
 def test_runtime_lookup_does_not_touch_the_street_source(builder, due_east):

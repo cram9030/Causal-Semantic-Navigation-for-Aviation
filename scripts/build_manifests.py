@@ -2,11 +2,19 @@
 """Build and pin the per-window landmark manifests for a trajectory set.
 
 This is the offline precompute of `docs/INTEGRATION_PLAN.md` §3.3, run once per
-flight-planning cycle: for every window of every trajectory in ``T``, grow the
-RNP tube by the sensor's ground field of view, query CSJ Streets against that
+flight-planning cycle: for every window of every candidate route in ``T``, grow
+the RNP tube by the sensor's ground reach, query CSJ Streets against that
 envelope, and record the candidate roads, their intersections, and the imagery
 tiles the window covers. The result is written as one pinned JSON bundle that
 the runtime "possible roads" node looks up - it never re-queries CSJ Streets.
+
+Every transition rule is covered the same way, over the *family* of paths it
+admits (`csnav.trajectory.transition`) - not just the candidate routes. A
+transition may begin at any arc length along its source, so the aircraft can
+legitimately be anywhere the family sweeps while a hand-off is under way; the
+manifest has to say what could be seen from there too, or the "possible roads"
+lookup goes empty for every slice flown during a transition. Pass
+`--no-transitions` to build candidate-route manifests only.
 
 Street geometry comes either from the live layer (resolved by name via
 ``ArcGISCatalog.find_layer``) or, with ``--streets-geojson``, from an archived
@@ -46,6 +54,7 @@ from csnav.data.lidar import LidarElevationClient  # noqa: E402
 from csnav.trajectory.config import load_scenario  # noqa: E402
 from csnav.trajectory.coverage import agl_from_elevation, height_as_agl  # noqa: E402
 from csnav.trajectory.manifest_builder import ManifestBuilder, StaticStreetsSource  # noqa: E402
+from csnav.trajectory.trajectory import X0_NODE  # noqa: E402
 
 logger = logging.getLogger("build_manifests")
 
@@ -102,6 +111,11 @@ def main() -> None:
         action="store_true",
         help="query CSJ Streets per window instead of once per trajectory (slower, tighter bounding boxes)",
     )
+    parser.add_argument(
+        "--no-transitions",
+        action="store_true",
+        help="only build manifests for candidate routes, skipping every transition family",
+    )
     parser.add_argument("--map", type=Path, default=None, help="also write a folium review map of the built bundle")
     parser.add_argument(
         "--map-landmarks",
@@ -137,12 +151,23 @@ def main() -> None:
         agl_provider=agl_provider,
     )
 
-    bundle = builder.build_set(scenario.trajectory_set, conops, per_window_query=args.per_window_query)
+    bundle = builder.build_set(
+        scenario.trajectory_set,
+        conops,
+        per_window_query=args.per_window_query,
+        include_transitions=not args.no_transitions,
+    )
     destination = bundle.save(args.output)
+    transition_windows = sum(
+        len(bundle.for_transition(rule.source, rule.target))
+        for rule in scenario.trajectory_set.transitions
+        if rule.source != X0_NODE
+    )
     logger.info(
-        "wrote %s: %d windows, %d roads, %d intersections, %d distinct tiles",
+        "wrote %s: %d windows (%d over transition families), %d roads, %d intersections, %d distinct tiles",
         destination,
         len(bundle.manifests),
+        transition_windows,
         sum(len(manifest.candidate_roads) for manifest in bundle.manifests),
         sum(len(manifest.intersections) for manifest in bundle.manifests),
         len(bundle.all_tiles()),
@@ -154,7 +179,13 @@ def main() -> None:
         logger.info(
             "wrote %s",
             save_map(
-                bundle_map(scenario.trajectory_set, bundle, show_landmarks=args.map_landmarks), args.map
+                bundle_map(
+                    scenario.trajectory_set,
+                    bundle,
+                    show_landmarks=args.map_landmarks,
+                    transition_model=conops.transition,
+                ),
+                args.map,
             ),
         )
 

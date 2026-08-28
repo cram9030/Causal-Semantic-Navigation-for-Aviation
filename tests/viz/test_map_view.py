@@ -14,6 +14,7 @@ from csnav.data.arcgis.tiles import web_mercator_tile_info
 from csnav.trajectory.coverage import merge_tiles, tiles_for_footprint, visible_footprint
 from csnav.trajectory.manifest_builder import ManifestBuilder, StaticStreetsSource
 from csnav.viz.map_view import (
+    _transition_window_label,
     base_map,
     bundle_map,
     manifest_map,
@@ -23,6 +24,7 @@ from csnav.viz.map_view import (
     transition_families,
     transition_map,
 )
+from csnav.trajectory.trajectory import TrajectoryWindow
 
 from tests.trajectory.test_manifest_builder import STREET_OFFSETS, _crossing_street, _parallel_street
 
@@ -241,6 +243,57 @@ def test_bundle_map_leaves_landmarks_out_until_asked(trajectory_set, bundle):
     assert "off-track offset" not in without
     assert 'key: "roads"' in with_landmarks
     assert "off-track offset" in with_landmarks
+
+
+def test_bundle_map_gives_transitions_their_own_group_too(trajectory_set, bundle):
+    """The bug this fixes: a built bundle's map showed candidate routes only."""
+    html = bundle_map(trajectory_set, bundle).get_root().render()
+
+    manifests = bundle.for_transition("due_east", "parallel_north")
+    assert manifests
+    assert f'{{id: "due_east__parallel_north", label: "due_east to parallel_north"' in html
+    for manifest in manifests:
+        assert f'id: "{manifest.window_id}"' in html
+
+
+def test_bundle_map_transition_windows_are_labelled_by_initiation_not_index(trajectory_set, bundle):
+    """A transition window's index alone means nothing - which sampled path it belongs to does."""
+    html = bundle_map(trajectory_set, bundle).get_root().render()
+    for manifest in bundle.for_transition("due_east", "parallel_north"):
+        assert "init " in html
+        assert f'"{manifest.window_id}", label: "init ' in html
+
+
+def test_bundle_map_draws_transition_paths_only_when_a_model_is_given(trajectory_set, bundle, model):
+    without = bundle_map(trajectory_set, bundle).get_root().render()
+    with_paths = bundle_map(trajectory_set, bundle, transition_model=model).get_root().render()
+
+    assert "transition initiates here" not in without
+    assert "transition initiates here" in with_paths
+
+
+def test_transition_window_label_leads_with_the_initiation_point():
+    window = TrajectoryWindow(
+        trajectory_id="t_p__t_alt_north__s00800.0",
+        index=1,
+        start_distance=500.0,
+        end_distance=1200.0,
+        start_time=0.0,
+        end_time=20.0,
+    )
+    assert _transition_window_label(window) == "init 800 m · win 0001 · 500-1,200 m"
+
+
+def test_transition_window_label_falls_back_to_the_raw_id_when_unparseable():
+    window = TrajectoryWindow(
+        trajectory_id="not_a_generated_id",
+        index=0,
+        start_distance=0.0,
+        end_distance=100.0,
+        start_time=0.0,
+        end_time=1.0,
+    )
+    assert "not_a_generated_id" in _transition_window_label(window)
 
 
 def test_save_map_writes_a_self_contained_html_file(trajectory_set, conops, tmp_path):

@@ -287,6 +287,30 @@ class ManifestBundle:
             if manifest.window.trajectory_id == trajectory_id
         )
 
+    def for_transition(self, source_id: str, target_id: str) -> tuple[LandmarkManifest, ...]:
+        """All window manifests built over one transition rule's sampled family.
+
+        A transition is not one trajectory but a family of generated paths
+        (:mod:`csnav.trajectory.transition`), so its manifests are spread across
+        several ``window.trajectory_id`` values - one per sampled path,
+        produced by :func:`csnav.trajectory.transition.transition_id` as
+        ``"<source_id>__<target_id>__s<initiate_distance>"``. This matches on
+        that prefix rather than requiring the caller to enumerate paths itself.
+        Order is insertion order (path, then that path's windows), not sorted -
+        callers that need a particular order should sort explicitly.
+        """
+        prefix = f"{source_id}__{target_id}__"
+        return tuple(
+            manifest for manifest in self.manifests if manifest.window.trajectory_id.startswith(prefix)
+        )
+
+    def transition_path_ids(self, source_id: str, target_id: str) -> tuple[str, ...]:
+        """Distinct generated-path ids covered for one transition rule, in first-seen order."""
+        seen: dict[str, None] = {}
+        for manifest in self.for_transition(source_id, target_id):
+            seen.setdefault(manifest.window.trajectory_id, None)
+        return tuple(seen)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,

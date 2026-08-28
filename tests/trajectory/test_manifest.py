@@ -93,6 +93,32 @@ def test_for_trajectory_returns_windows_in_order(bundle):
     assert [manifest.window.index for manifest in manifests] == list(range(len(manifests)))
 
 
+def test_for_transition_covers_the_generated_family_not_just_candidates(bundle, trajectory_set, conops):
+    """The bug this fixes: transitions were entirely absent from a built bundle."""
+    transition_manifests = bundle.for_transition("due_east", "parallel_north")
+    assert transition_manifests
+
+    family = conops.transition.family(
+        trajectory_set.by_id("due_east"), trajectory_set.by_id("parallel_north"), trajectory_set.transitions[1]
+    )
+    path_ids = bundle.transition_path_ids("due_east", "parallel_north")
+    assert len(path_ids) == len(family)
+    assert set(path_ids) == {path.id for path in family.paths}
+
+
+def test_for_transition_does_not_pick_up_candidate_route_manifests(bundle):
+    """Route ids never look like '<source>__<target>__s...', but the boundary is still worth pinning."""
+    assert bundle.for_transition("due_east", "does_not_exist") == ()
+    route_manifests = set(bundle.for_trajectory("due_east"))
+    transition_manifests = set(bundle.for_transition("due_east", "parallel_north"))
+    assert route_manifests.isdisjoint(transition_manifests)
+
+
+def test_transition_path_ids_are_generated_transition_trajectory_ids(bundle):
+    for path_id in bundle.transition_path_ids("due_east", "parallel_north"):
+        assert path_id.startswith("due_east__parallel_north__s")
+
+
 def test_all_tiles_deduplicates_across_the_whole_set(bundle):
     merged = bundle.all_tiles()
     per_manifest_total = sum(len(manifest.tiles) for manifest in bundle.manifests)

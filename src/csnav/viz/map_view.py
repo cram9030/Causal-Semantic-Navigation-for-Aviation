@@ -25,6 +25,7 @@ growth, tile selection) is already done by :mod:`csnav.trajectory.tube` and
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -237,29 +238,9 @@ def _fit(fmap, bounds) -> None:
     fmap.fit_bounds([[bounds.ymin, bounds.xmin], [bounds.ymax, bounds.xmax]])
 
 
-def _add_transition_family(
-    group,
-    family: TransitionFamily,
-    source: Trajectory,
-    tube,
-    color: str,
-) -> None:
-    """Draw one transition family: its swept reachable region, then each sampled path."""
+def _add_transition_paths(group, family: TransitionFamily, source: Trajectory, color: str) -> None:
+    """Draw each sampled path in a family: a dashed curve plus a marker at its initiation point."""
     folium = _folium()
-    footprint = family.reachable_footprint(tube)
-    if not footprint.is_empty:
-        _add_corridor(
-            group,
-            footprint,
-            color,
-            (
-                f"{family.rule.source} &#8594; {family.rule.target}<br>"
-                f"reachable while transitioning (tube {tube.radius:.0f} m)<br>"
-                f"{len(family)} sampled initiations across "
-                f"{family.domain[0]:.0f}-{family.domain[1]:.0f} m of the source"
-            ),
-            fill_opacity=0.10,
-        )
     for path in family.paths:
         origin = source.point_at(path.initiate_distance)
         folium.PolyLine(
@@ -286,6 +267,31 @@ def _add_transition_family(
             weight=1,
             tooltip=f"transition initiates here ({path.initiate_distance:.0f} m along {path.source_id})",
         ).add_to(group)
+
+
+def _add_transition_family(
+    group,
+    family: TransitionFamily,
+    source: Trajectory,
+    tube,
+    color: str,
+) -> None:
+    """Draw one transition family: its swept reachable region, then each sampled path."""
+    footprint = family.reachable_footprint(tube)
+    if not footprint.is_empty:
+        _add_corridor(
+            group,
+            footprint,
+            color,
+            (
+                f"{family.rule.source} &#8594; {family.rule.target}<br>"
+                f"reachable while transitioning (tube {tube.radius:.0f} m)<br>"
+                f"{len(family)} sampled initiations across "
+                f"{family.domain[0]:.0f}-{family.domain[1]:.0f} m of the source"
+            ),
+            fill_opacity=0.10,
+        )
+    _add_transition_paths(group, family, source, color)
 
 
 def transition_families(
@@ -430,6 +436,24 @@ def transition_map(
 def _window_label(window: TrajectoryWindow) -> str:
     """Compact row label for the window selector: index and arc-length span."""
     return f"{window.index:04d} \u00b7 {window.start_distance:,.0f}-{window.end_distance:,.0f} m"
+
+
+#: Pulls the initiation arc length back out of a generated transition path id
+#: ("<source>__<target>__sNNNNN.N", from csnav.trajectory.transition.transition_id).
+_TRANSITION_PATH_ID = re.compile(r"__s(\d+(?:\.\d+)?)$")
+
+
+def _transition_window_label(window: TrajectoryWindow) -> str:
+    """Row label for a transition-family window selector: which sampled path, and where in it.
+
+    A transition family has no single arc-length origin the way a candidate
+    route does - each sampled path starts fresh - so the label leads with the
+    path's own initiation point (where along the source it begins) rather than
+    a window index that would mean nothing on its own.
+    """
+    match = _TRANSITION_PATH_ID.search(window.trajectory_id)
+    initiation = f"init {float(match.group(1)):,.0f} m" if match else window.trajectory_id
+    return f"{initiation} \u00b7 win {window.index:04d} \u00b7 {window.start_distance:,.0f}-{window.end_distance:,.0f} m"
 
 
 def trajectory_map(
@@ -590,12 +614,18 @@ def _manifest_window_layers(
     color: str,
     categories: Sequence[str],
     shown: Mapping[str, bool],
+    label_fn: Any = _window_label,
 ) -> WindowLayers:
     """Build one window's per-category layers and register them on the map.
 
     Layers are created with ``control=False``: they belong to the
     :class:`~csnav.viz.window_selector.WindowSelector`, not to folium's flat
     layer control, which is where 36 window layers would be unreadable.
+
+    ``label_fn`` picks the row label: a candidate route's window means
+    something by its index alone (:func:`_window_label`); a transition
+    family's does not, since every sampled path starts its own arc length at
+    zero, so :func:`_transition_window_label` leads with which path it is.
     """
     folium = _folium()
     window = manifest.window
@@ -632,7 +662,7 @@ def _manifest_window_layers(
 
     return WindowLayers(
         window_id=manifest.window_id,
-        label=_window_label(window),
+        label=label_fn(window),
         layers=layers,
         detail=(
             f"arc {window.start_distance:.0f}-{window.end_distance:.0f} m, "
@@ -719,15 +749,29 @@ def bundle_map(
     bundle: ManifestBundle,
     include_imagery: bool = True,
     show_landmarks: bool = False,
+    transition_model: TransitionModel | None = None,
 ):
-    """Map every trajectory's pinned manifest in one figure, window by window.
+    """Map every pinned manifest in one figure, window by window - candidate routes and transitions alike.
 
-    Centerlines stay in folium's own layer control, one per trajectory. The
+    Centerlines (routes) and sampled paths (transitions) stay in folium's own
+    layer control, one per route and one per transition rule. The manifest
     windows are managed by a
     :class:`~csnav.viz.window_selector.WindowSelector` panel instead: expand a
-    trajectory to get its windows, tick the ones you want, or solo one. Windows
-    overlap at every shared boundary, so with all of them shown at once the
-    fills alternate between two opacities to keep the sequence readable.
+    route or a transition rule to get its windows, tick the ones you want, or
+    solo one. Windows overlap at every shared boundary, so with all of them
+    shown at once the fills alternate between two opacities to keep the
+    sequence readable.
+
+    A transition family has no single arc-length origin the way a route does -
+    each sampled path starts fresh - so its window rows lead with which path
+    they belong to (where it initiates on the source), via
+    :func:`_transition_window_label`.
+
+    ``transition_model`` draws each transition rule's sampled paths as dashed
+    curves with initiation markers, the same way :func:`trajectory_set_map`
+    does; pass the scenario's ``conops.transition`` for that context. Leave it
+    out to show only the pinned manifest windows without regenerating the
+    family's geometry - the manifest itself never depended on having it.
 
     ``show_landmarks`` adds each window's candidate roads and intersections as
     further categories, off by default - across a whole bundle that is a lot of
@@ -765,6 +809,42 @@ def bundle_map(
                 color=color,
                 windows=tuple(
                     _manifest_window_layers(fmap, manifest, color, categories, shown)
+                    for manifest in manifests
+                ),
+            )
+        )
+
+    for rule in trajectory_set.transitions:
+        if rule.source == X0_NODE:
+            continue
+        manifests = bundle.for_transition(rule.source, rule.target)
+        if not manifests:
+            continue
+        path_ids = bundle.transition_path_ids(rule.source, rule.target)
+        rule_label = f"{rule.source} to {rule.target}"
+
+        path_group = folium.FeatureGroup(
+            name=(
+                f"{rule_label} ({len(path_ids)} paths, {len(manifests)} windows, "
+                f"tube {manifests[0].tube_radius:.0f} m)"
+            ),
+            show=False,
+        )
+        if transition_model is not None:
+            source = trajectory_set.by_id(rule.source)
+            family = transition_model.family(source, trajectory_set.by_id(rule.target), rule)
+            _add_transition_paths(path_group, family, source, TRANSITION_COLOR)
+        path_group.add_to(fmap)
+
+        groups.append(
+            WindowGroup(
+                id=f"{rule.source}__{rule.target}",
+                label=rule_label,
+                color=TRANSITION_COLOR,
+                windows=tuple(
+                    _manifest_window_layers(
+                        fmap, manifest, TRANSITION_COLOR, categories, shown, label_fn=_transition_window_label
+                    )
                     for manifest in manifests
                 ),
             )

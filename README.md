@@ -285,18 +285,28 @@ python scripts/build_manifests.py \
     --map out/viz/manifests.html
 ```
 
-For each window of each route, this grows the tube by how far the camera can
-see, queries CSJ Streets against that envelope, clips the returned centerlines
-to it, derives their intersections, and records the imagery tiles the window
-covers. The result is one pinned JSON bundle - the runtime "possible roads"
-lookup reads it and never re-queries CSJ Streets.
+For each window of each candidate route, this grows the tube by how far the
+camera can see, queries CSJ Streets against that envelope, clips the returned
+centerlines to it, derives their intersections, and records the imagery tiles
+the window covers. The result is one pinned JSON bundle - the runtime "possible
+roads" lookup reads it and never re-queries CSJ Streets.
+
+**Every transition rule is covered the same way, by default.** A transition
+may begin anywhere along its source, so the aircraft can legitimately be
+anywhere the sampled family sweeps while a hand-off is under way - the
+manifest has to say what could be seen from there too, not just from the
+candidate routes. `build_set` generates each rule's family and builds windows
+over every sampled path, querying streets once per family rather than once per
+path. Pass `--no-transitions` to build candidate-route manifests only.
 
 `--map` writes a review map of the built bundle, with the window selector
-described above: expand a trajectory, solo a window, and see exactly what that
-window's manifest covers. Pass `--map-landmarks` to include each window's
-candidate roads and intersections as further categories (off by default - across
-a whole bundle that is a lot of geometry, and the per-trajectory
-`manifest_map` view is the one for inspecting landmarks closely).
+described above: expand a route or a transition rule to get its windows, solo
+one, and see exactly what it covers - transition windows are labelled by which
+sampled path they belong to and where it initiates, since a transition has no
+single arc-length origin the way a route does. Pass `--map-landmarks` to
+include each window's candidate roads and intersections as further categories
+(off by default - across a whole bundle that is a lot of geometry, and the
+per-route `manifest_map` view is the one for inspecting landmarks closely).
 
 Pass `--streets-geojson` to build from an archived pull written by
 `scripts/fetch_csj_streets.py` instead of the live layer; prefer that when

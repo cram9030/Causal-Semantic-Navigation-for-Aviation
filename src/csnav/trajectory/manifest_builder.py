@@ -51,7 +51,8 @@ from csnav.trajectory.manifest import (
     ManifestIntersection,
     ManifestLandmark,
 )
-from csnav.trajectory.trajectory import Trajectory, TrajectorySet, TrajectoryWindow
+from csnav.trajectory.trajectory import X0_NODE, Trajectory, TrajectorySet, TrajectoryWindow
+from csnav.trajectory.transition import TransitionFamily, TransitionModel
 from csnav.trajectory.tube import TubeModel
 
 logger = logging.getLogger(__name__)
@@ -308,6 +309,70 @@ class ManifestBuilder:
             for window in windows
         )
 
+    # ----- one transition family ----------------------------------------------
+
+    def build_transition_family(
+        self,
+        family: TransitionFamily,
+        tube: TubeModel,
+        window_length: float,
+        camera: Camera | None = None,
+        per_window_query: bool = False,
+    ) -> tuple[LandmarkManifest, ...]:
+        """Build manifests over every sampled path in a transition family.
+
+        A transition is not one trajectory but a *family* of generated paths
+        (:mod:`csnav.trajectory.transition`) - the region it sweeps is the
+        object of interest, and any point in it is a valid state mid-transition.
+        Pinning manifests over it means building windows over each sampled
+        path's own arc length, at ``tube``'s radius (the CONOPS's transition
+        radius, typically wider than a candidate route's). Denser sampling
+        (``conops.transition.samples``) gives tighter coverage of that region at
+        the cost of more manifests - it is the same fidelity/cost knob it is
+        everywhere else in the transition model.
+
+        By default streets are queried **once**, over the whole family's
+        reachable footprint (every sampled path's tube, unioned, grown by the
+        camera's worst-case reach across every path), and reused across every
+        path's windows - one request instead of one per path. Set
+        ``per_window_query=True`` to query per window instead, as
+        :meth:`build_trajectory` does.
+
+        Returns nothing for an empty family (every initiation screened out) -
+        there is no region to cover, not an error.
+        """
+        if family.is_empty:
+            return ()
+
+        shared: list[StreetSegment] | None = None
+        if not per_window_query:
+            reach = (
+                max(
+                    max_ground_reach(path.trajectory, None, camera, self.agl_provider)
+                    for path in family.paths
+                )
+                if camera is not None
+                else 0.0
+            )
+            route_footprint = family.reachable_footprint(tube, extra_buffer=reach)
+            shared = self.streets.query(bbox=_polygon_extent(route_footprint), where=self.streets_where)
+            logger.info(
+                "transition %s -> %s: %d street segments fetched for %d sampled paths",
+                family.rule.source,
+                family.rule.target,
+                len(shared),
+                len(family.paths),
+            )
+
+        manifests: list[LandmarkManifest] = []
+        for path in family.paths:
+            windows = path.trajectory.windows(window_length)
+            manifests.extend(
+                self.build_window(path.trajectory, window, tube, camera=camera, segments=shared)
+                for window in windows
+            )
+        return tuple(manifests)
+
     # ----- a whole trajectory set --------------------------------------------
 
     def build_set(
@@ -315,14 +380,25 @@ class ManifestBuilder:
         trajectory_set: TrajectorySet,
         conops: "ConopsConfigLike",
         per_window_query: bool = False,
+        include_transitions: bool = True,
     ) -> ManifestBundle:
-        """Build and pin manifests for every trajectory in ``T``, including transition corridors.
+        """Build and pin manifests for every candidate route in ``T``, and every transition family.
 
         ``conops`` supplies the swept parameters - the tube radius for each
-        trajectory, the window length in meters, and the camera - via
+        trajectory, the window length in meters, the camera, and the
+        transition model - via
         :meth:`csnav.trajectory.config.ConopsConfig.tube_for`. Its recorded
         values travel with the bundle so a pinned manifest says what it was
         built under.
+
+        With ``include_transitions`` (the default), every rule in
+        ``trajectory_set.transitions`` - other than an entry rule out of
+        :data:`~csnav.trajectory.trajectory.X0_NODE`, which carries no geometry
+        - is generated via ``conops.transition`` and covered by
+        :meth:`build_transition_family`. A rule whose family turns out empty
+        (every sampled initiation screened out) is logged and skipped, not
+        treated as an error: the manifest simply has nothing to say about a
+        hand-off nothing can fly.
         """
         manifests: list[LandmarkManifest] = []
         for trajectory in trajectory_set.trajectories:
@@ -335,6 +411,33 @@ class ManifestBuilder:
                     per_window_query=per_window_query,
                 )
             )
+
+        if include_transitions:
+            for rule in trajectory_set.transitions:
+                if rule.source == X0_NODE:
+                    continue
+                source = trajectory_set.by_id(rule.source)
+                target = trajectory_set.by_id(rule.target)
+                family = conops.transition.family(source, target, rule)
+                if family.is_empty:
+                    logger.warning(
+                        "transition %s -> %s admits no feasible path (all %d sampled initiations "
+                        "screened out); no manifest built for it",
+                        rule.source,
+                        rule.target,
+                        family.rejected,
+                    )
+                    continue
+                manifests.extend(
+                    self.build_transition_family(
+                        family,
+                        conops.tube_for(family.paths[0].trajectory),
+                        conops.window_length,
+                        camera=conops.camera,
+                        per_window_query=per_window_query,
+                    )
+                )
+
         return ManifestBundle(
             trajectory_set_id=trajectory_set.id,
             manifests=tuple(manifests),
@@ -454,6 +557,7 @@ class ConopsConfigLike(Protocol):
     transition_tube_radius: float | None
     window_length: float
     camera: Camera | None
+    transition: TransitionModel
     per_trajectory_radius: dict[str, float]
 
     def tube_for(self, trajectory: Trajectory) -> TubeModel:
