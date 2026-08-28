@@ -144,10 +144,12 @@ class ManifestIntersection:
 class LandmarkManifest:
     """Everything the runtime may look up for one trajectory window.
 
-    ``tube_radius`` (meters) and ``max_agl`` (meters above ground) are recorded
-    with the manifest rather than assumed by its readers: the radius is a swept
-    experimental parameter (CLAUDE.md core decision 4), so two manifests for
-    the same window at different radii must be distinguishable after the fact.
+    ``tube_radius`` (meters), ``max_agl`` (meters above ground) and
+    ``ground_reach`` (meters the camera could see beyond the ground track) are
+    recorded with the manifest rather than assumed by its readers: the radius is
+    a swept experimental parameter (CLAUDE.md core decision 4), so two manifests
+    for the same window at different radii - or at the same radius with a
+    different sensor pose - must be distinguishable after the fact.
     ``footprint`` is the visible-ground polygon the landmark query was issued
     against, in WGS84 (lon, lat); ``envelope`` is its bounding box.
     """
@@ -155,6 +157,7 @@ class LandmarkManifest:
     window: TrajectoryWindow
     tube_radius: float
     max_agl: float
+    ground_reach: float
     envelope: Extent
     footprint: Polygon
     candidate_roads: tuple[ManifestLandmark, ...]
@@ -203,6 +206,7 @@ class LandmarkManifest:
             },
             "tube_radius_m": self.tube_radius,
             "max_agl_m": self.max_agl,
+            "ground_reach_m": self.ground_reach,
             "envelope": _extent_to_dict(self.envelope),
             "footprint": self.footprint.__geo_interface__,
             "candidate_roads": [road.to_geojson_feature() for road in self.candidate_roads],
@@ -228,6 +232,7 @@ class LandmarkManifest:
             window=window,
             tube_radius=raw["tube_radius_m"],
             max_agl=raw["max_agl_m"],
+            ground_reach=raw.get("ground_reach_m", 0.0),
             envelope=_extent_from_dict(raw["envelope"]),
             footprint=shape(raw["footprint"]),
             candidate_roads=tuple(

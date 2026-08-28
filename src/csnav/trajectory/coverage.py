@@ -2,11 +2,14 @@
 
 Two things sit between the tube model and the manifest builder:
 
-1. **The visible footprint** - the tube corridor for a window, grown by the
-   ground radius of the sensor field of view at that window's height above
-   ground. Integration plan §3.3 scopes a manifest to "the roads/intersections
-   that could possibly be visible from *any* state within the tube at that
-   window", which is exactly this shape, not the bare tube.
+1. **The visible footprint** - the tube corridor for a window, grown by how far
+   the camera can see on the ground from that window's height. Integration plan
+   §3.3 scopes a manifest to "the roads/intersections that could possibly be
+   visible from *any* state within the tube at that window", which is exactly
+   this shape, not the bare tube. The growth comes from
+   :class:`csnav.geometry.camera.Camera`, so it accounts for the sensor's
+   mounting pose and for the attitude excursion allowed near waypoints, not
+   just the cone angle.
 2. **The tile set in view** - which cached imagery tiles that footprint
    covers. Those are the tiles the ground-truth builder needs panoptic labels
    for (§4, "manifests are consumed both by the ground-truth builder ... and
@@ -31,7 +34,7 @@ from shapely.ops import unary_union
 from csnav.data.arcgis.models import Extent, TileInfo
 from csnav.data.arcgis.projections import extent_3857_to_4326, extent_4326_to_3857
 from csnav.data.arcgis.tiles import tile_bounds, tile_row_col_range
-from csnav.geometry.fov import FieldOfView
+from csnav.geometry.camera import Camera
 from csnav.trajectory.trajectory import Trajectory, TrajectoryWindow
 from csnav.trajectory.tube import TubeModel, polygon_bounds
 from csnav.trajectory.waypoints import Waypoint
@@ -114,45 +117,86 @@ class TileRef:
         }
 
 
-def max_agl(trajectory: Trajectory, window: TrajectoryWindow, agl_provider: AglProvider, samples: int = 8) -> float:
-    """Largest height above ground, in meters, sampled across a window's span.
+#: Arc-length samples taken across a window when bounding its AGL or ground
+#: reach. Both quantities vary smoothly along a window, so a handful of samples
+#: bounds them; this is a fidelity knob, not a modelling parameter.
+DEFAULT_WINDOW_SAMPLES = 8
 
-    The *maximum* is used deliberately: the FOV ground radius grows with
-    height, so sizing a window's search footprint from its highest point keeps
-    the manifest a superset of what could actually be seen anywhere in the
-    window. ``samples`` is the number of evenly spaced arc-length samples
-    (plus both endpoints).
-    """
+
+def _window_distances(
+    trajectory: Trajectory, window: TrajectoryWindow | None, samples: int
+) -> list[float]:
+    """Evenly spaced arc-length positions (meters) across a window, or the whole trajectory."""
     if samples < 1:
         raise ValueError(f"samples must be >= 1, got {samples}")
-    span = window.end_distance - window.start_distance
-    points = [trajectory.point_at(window.start_distance + span * step / samples) for step in range(samples + 1)]
-    return max(agl_provider(point) for point in points)
+    start = 0.0 if window is None else window.start_distance
+    end = trajectory.length if window is None else window.end_distance
+    span = end - start
+    return [start + span * step / samples for step in range(samples + 1)]
+
+
+def max_agl(
+    trajectory: Trajectory,
+    window: TrajectoryWindow | None,
+    agl_provider: AglProvider,
+    samples: int = DEFAULT_WINDOW_SAMPLES,
+) -> float:
+    """Largest height above ground, in meters, sampled across a window's span.
+
+    The *maximum* is used deliberately: ground reach grows with height, so
+    sizing a window's search footprint from its highest point keeps the manifest
+    a superset of what could actually be seen anywhere in the window.
+    ``window=None`` spans the whole trajectory.
+    """
+    return max(
+        agl_provider(trajectory.point_at(distance))
+        for distance in _window_distances(trajectory, window, samples)
+    )
+
+
+def max_ground_reach(
+    trajectory: Trajectory,
+    window: TrajectoryWindow | None,
+    camera: Camera,
+    agl_provider: AglProvider = height_as_agl,
+    samples: int = DEFAULT_WINDOW_SAMPLES,
+) -> float:
+    """Farthest the camera could see from anywhere in the window, in meters from the ground track.
+
+    Sampled across the window and maximized, because both inputs vary along it:
+    height above ground, and the attitude margin, which widens near waypoints
+    where the turns are. The result is the radial allowance
+    :func:`visible_footprint` adds to the tube radius.
+    """
+    return max(
+        camera.bounded_ground_reach(
+            agl_provider(trajectory.point_at(distance)),
+            trajectory.distance_to_nearest_waypoint(distance),
+        )
+        for distance in _window_distances(trajectory, window, samples)
+    )
 
 
 def visible_footprint(
     trajectory: Trajectory,
     tube: TubeModel,
     window: TrajectoryWindow | None = None,
-    field_of_view: FieldOfView | None = None,
+    camera: Camera | None = None,
     agl_provider: AglProvider = height_as_agl,
 ) -> Polygon:
     """Ground area that could be seen from anywhere inside the tube, in WGS84 (lon, lat).
 
-    The tube corridor grown radially by the FOV ground radius at the window's
-    maximum AGL. With ``field_of_view=None`` this degenerates to the bare tube
-    corridor - useful for showing containment alone. ``window=None`` covers the
-    whole trajectory (its maximum AGL over all waypoints).
+    The tube corridor grown radially by :func:`max_ground_reach` - the camera's
+    worst-case reach across the window, given its mounting pose and attitude
+    margin. With ``camera=None`` this degenerates to the bare tube corridor,
+    which is what shows containment alone. ``window=None`` covers the whole
+    trajectory.
     """
-    if field_of_view is None:
+    if camera is None:
         return tube.corridor(trajectory, window=window)
 
-    if window is None:
-        agl = max(agl_provider(waypoint) for waypoint in trajectory.waypoints)
-    else:
-        agl = max_agl(trajectory, window, agl_provider)
-
-    return tube.corridor(trajectory, window=window, extra_buffer=field_of_view.ground_radius(agl))
+    reach = max_ground_reach(trajectory, window, camera, agl_provider)
+    return tube.corridor(trajectory, window=window, extra_buffer=reach)
 
 
 def tiles_for_footprint(

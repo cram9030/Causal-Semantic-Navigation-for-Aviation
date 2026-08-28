@@ -28,11 +28,12 @@ dev = [
     "pytest>=8.0",
     "responses>=0.25",
 ]
-# Phase 1 (viz/) visualization: static trajectory-graph/profile figures and
-# interactive Leaflet maps of tubes, window footprints, and imagery tiles.
-# Kept optional so the data pipeline installs without a plotting stack.
+# Phase 1 (viz/) visualization: interactive Plotly figures of the transition
+# graph and route profiles, and interactive Leaflet maps of tubes, transition
+# families, window footprints, and imagery tiles. Both emit self-contained
+# HTML. Kept optional so the data pipeline installs without a plotting stack.
 viz = [
-    "matplotlib>=3.8",
+    "plotly>=5.20",
     "folium>=0.15",
 ]
 # Phase 2 (segmentation/) fine-tuning deps: torch/torchvision's Linux wheels

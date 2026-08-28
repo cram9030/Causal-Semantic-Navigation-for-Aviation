@@ -27,7 +27,6 @@ different input - CLAUDE.md core decision 4.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict
 from typing import Any, Protocol
 
 from shapely.geometry import LineString, MultiLineString, Polygon
@@ -36,12 +35,13 @@ from shapely.strtree import STRtree
 from csnav.data.arcgis.models import Extent, TileInfo
 from csnav.data.arcgis.streets import StreetSegment
 from csnav.geometry import shapes
-from csnav.geometry.fov import FieldOfView
+from csnav.geometry.camera import Camera
 from csnav.trajectory.coverage import (
     AglProvider,
     TileRef,
     height_as_agl,
     max_agl,
+    max_ground_reach,
     tiles_for_footprint,
     visible_footprint,
 )
@@ -203,20 +203,21 @@ class ManifestBuilder:
         trajectory: Trajectory,
         window: TrajectoryWindow,
         tube: TubeModel,
-        field_of_view: FieldOfView | None = None,
+        camera: Camera | None = None,
         segments: list[StreetSegment] | None = None,
     ) -> LandmarkManifest:
         """Build the manifest for one trajectory window.
 
         ``tube`` supplies the containment radius (meters) - it is never derived
-        here. ``field_of_view`` grows the search footprint beyond the tube by
-        the sensor's ground radius at the window's maximum AGL; ``None`` scopes
-        the manifest to the tube itself. ``segments`` lets a caller pass street
-        geometry it has already fetched (see :meth:`build_trajectory`, which
-        queries once per trajectory rather than once per window).
+        here. ``camera`` grows the search footprint beyond the tube by how far
+        the sensor can see from the window's worst-case height and attitude;
+        ``None`` scopes the manifest to the tube itself. ``segments`` lets a
+        caller pass street geometry it has already fetched (see
+        :meth:`build_trajectory`, which queries once per trajectory rather than
+        once per window).
         """
         footprint = visible_footprint(
-            trajectory, tube, window=window, field_of_view=field_of_view, agl_provider=self.agl_provider
+            trajectory, tube, window=window, camera=camera, agl_provider=self.agl_provider
         )
         envelope = _polygon_extent(footprint)
 
@@ -258,6 +259,9 @@ class ManifestBuilder:
             window=window,
             tube_radius=tube.radius,
             max_agl=max_agl(trajectory, window, self.agl_provider),
+            ground_reach=(
+                0.0 if camera is None else max_ground_reach(trajectory, window, camera, self.agl_provider)
+            ),
             envelope=envelope,
             footprint=footprint,
             candidate_roads=tuple(roads),
@@ -272,7 +276,7 @@ class ManifestBuilder:
         trajectory: Trajectory,
         tube: TubeModel,
         window_length: float,
-        field_of_view: FieldOfView | None = None,
+        camera: Camera | None = None,
         per_window_query: bool = False,
     ) -> tuple[LandmarkManifest, ...]:
         """Build one manifest per window of ``trajectory``.
@@ -290,7 +294,7 @@ class ManifestBuilder:
         shared: list[StreetSegment] | None = None
         if not per_window_query:
             route_footprint = visible_footprint(
-                trajectory, tube, window=None, field_of_view=field_of_view, agl_provider=self.agl_provider
+                trajectory, tube, window=None, camera=camera, agl_provider=self.agl_provider
             )
             shared = self.streets.query(bbox=_polygon_extent(route_footprint), where=self.streets_where)
             logger.info(
@@ -300,7 +304,7 @@ class ManifestBuilder:
                 len(windows),
             )
         return tuple(
-            self.build_window(trajectory, window, tube, field_of_view=field_of_view, segments=shared)
+            self.build_window(trajectory, window, tube, camera=camera, segments=shared)
             for window in windows
         )
 
@@ -315,7 +319,7 @@ class ManifestBuilder:
         """Build and pin manifests for every trajectory in ``T``, including transition corridors.
 
         ``conops`` supplies the swept parameters - the tube radius for each
-        trajectory, the window length in meters, and the field of view - via
+        trajectory, the window length in meters, and the camera - via
         :meth:`csnav.trajectory.config.ConopsConfig.tube_for`. Its recorded
         values travel with the bundle so a pinned manifest says what it was
         built under.
@@ -327,7 +331,7 @@ class ManifestBuilder:
                     trajectory,
                     conops.tube_for(trajectory),
                     conops.window_length,
-                    field_of_view=conops.field_of_view,
+                    camera=conops.camera,
                     per_window_query=per_window_query,
                 )
             )
@@ -345,7 +349,7 @@ class ManifestBuilder:
             "tube_radius_m": conops.tube_radius,
             "transition_tube_radius_m": conops.transition_tube_radius,
             "window_length_m": conops.window_length,
-            "field_of_view": asdict(conops.field_of_view) if conops.field_of_view else None,
+            "camera": _camera_parameters(conops.camera),
             "per_trajectory_tube_radius_m": dict(conops.per_trajectory_radius),
             "intersection_snap_m": self.intersection_snap,
         }
@@ -415,6 +419,24 @@ def _add_to_cluster(
     clusters.append(([east], [north], set(ids)))
 
 
+def _camera_parameters(camera: Camera | None) -> dict[str, Any] | None:
+    """Camera settings recorded with a manifest, so a pinned build says what saw what."""
+    if camera is None:
+        return None
+    return {
+        "horizontal_deg": camera.field_of_view.horizontal_deg,
+        "vertical_deg": camera.field_of_view.vertical_deg,
+        "pose_roll_deg": camera.pose.roll_deg,
+        "pose_pitch_deg": camera.pose.pitch_deg,
+        "pose_yaw_deg": camera.pose.yaw_deg,
+        "attitude_margin_roll_deg": camera.attitude_margin.roll_deg,
+        "attitude_margin_pitch_deg": camera.attitude_margin.pitch_deg,
+        "maneuver_roll_deg": camera.attitude_margin.maneuver_roll_deg,
+        "maneuver_pitch_deg": camera.attitude_margin.maneuver_pitch_deg,
+        "maneuver_radius_m": camera.attitude_margin.maneuver_radius,
+    }
+
+
 def _polygon_extent(polygon: Polygon) -> Extent:
     xmin, ymin, xmax, ymax = polygon.bounds
     return Extent(xmin=xmin, ymin=ymin, xmax=xmax, ymax=ymax, wkid=4326)
@@ -431,7 +453,7 @@ class ConopsConfigLike(Protocol):
     tube_radius: float
     transition_tube_radius: float | None
     window_length: float
-    field_of_view: FieldOfView | None
+    camera: Camera | None
     per_trajectory_radius: dict[str, float]
 
     def tube_for(self, trajectory: Trajectory) -> TubeModel:

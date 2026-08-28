@@ -1,257 +1,467 @@
-"""Static views of a trajectory set: the graph of ``T``, and per-trajectory profiles.
+"""Interactive structural views of a trajectory set: the transition graph and route profiles.
 
-Two figures, both matplotlib:
+Two Plotly figures, both written as self-contained HTML so they sit alongside
+the Leaflet maps rather than as a static image:
 
-* :func:`plot_trajectory_graph` draws the trajectory set as its
-  ``networkx.DiGraph`` - candidate trajectories as nodes, transition corridors
-  as edges, ``x_0`` as the entry node. This is the structural view of ``T``:
-  what the aircraft can switch to from where, which is the reachability
-  structure the tube containment assumption (integration plan §3.2) is defined
-  over.
-* :func:`plot_trajectory_profile` draws one trajectory against arc length -
-  height, tube radius, and FOV ground radius - with the manifest window
-  boundaries marked, so the discretization the manifests are built over is
-  visible alongside the geometry that sizes them.
+* :func:`transition_graph_figure` draws ``T`` as its ``networkx.DiGraph`` -
+  candidate routes as nodes, permitted transitions as edges, ``x_0`` as the
+  entry. This is a **structural** view: node positions are graph layers, not
+  geography. Where the routes sit on the ground is the map's job
+  (:mod:`csnav.viz.map_view`); plotting a route's midpoint at its own latitude
+  and longitude would produce a picture that is neither a map nor a graph.
+* :func:`route_profile_figure` draws each candidate against arc length -
+  height above ground, the tube radius, and the camera's ground reach - with
+  the manifest window boundaries marked.
 
-For the spatial view (corridors, tubes, tiles on a real basemap) see
-:mod:`csnav.viz.map_view`.
+:func:`write_report` puts them, plus the enumerated routes, into one HTML page.
 """
 
 from __future__ import annotations
 
-import networkx as nx
-from matplotlib.axes import Axes
-from matplotlib.figure import Figure
-from matplotlib.lines import Line2D
+import math
+from pathlib import Path
+from typing import Any, Iterable, Sequence
 
-from csnav.geometry.fov import FieldOfView
+import networkx as nx
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
 from csnav.trajectory.config import ConopsConfig
 from csnav.trajectory.coverage import AglProvider, height_as_agl
-from csnav.trajectory.trajectory import X0_NODE, Trajectory, TrajectorySet
-from csnav.trajectory.tube import TubeModel
+from csnav.trajectory.trajectory import X0_NODE, TrajectorySet
+from csnav.trajectory.transition import TransitionModel
 from csnav.trajectory.waypoints import TrajectoryRole
-from csnav.viz.style import PRIMARY_COLOR, TRANSITION_COLOR, X0_COLOR, color_for
+from csnav.viz.style import (
+    GRID_COLOR,
 
+    TEXT_COLOR,
+    TRANSITION_COLOR,
+    X0_COLOR,
+    color_for,
+)
 
-def geographic_layout(trajectory_set: TrajectorySet) -> dict[str, tuple[float, float]]:
-    """Node positions in ``(lon, lat)`` degrees - each node at its trajectory's midpoint.
+#: Horizontal gap between graph layers, and vertical gap between siblings, in
+#: the figure's own arbitrary layout units.
+_LAYER_GAP = 1.0
+_SIBLING_GAP = 1.0
 
-    Gives the structural graph a spatial reading: the node order across the
-    figure matches the order of the routes on the ground. Positions are in
-    degrees purely as a plotting coordinate; no metric math is done on them.
+#: Fraction of an edge trimmed at each end so its arrowhead does not land under
+#: a node marker.
+_EDGE_TRIM = 0.14
+
+#: How far an edge bows sideways per extra layer it spans, in layout units. An
+#: edge between adjacent layers is drawn straight; one that skips a layer has to
+#: bow, or it runs straight through the node in between and disappears.
+_EDGE_BOW = 0.55
+
+#: Points used to draw a bowed edge.
+_EDGE_STEPS = 24
+
+def layered_layout(graph: nx.DiGraph) -> dict[str, tuple[float, float]]:
+    """Node positions in layers by how many transitions it takes to reach each node.
+
+    ``x`` is the longest transition count from :data:`X0_NODE` - so a route
+    reachable both directly and via a divert sits at its *later* position, which
+    is where it reads correctly relative to the routes that feed it. ``y``
+    spreads a layer's nodes evenly and centres each layer. Positions are
+    arbitrary layout units with no physical meaning.
     """
-    positions = {X0_NODE: (trajectory_set.x0.lon, trajectory_set.x0.lat)}
-    for trajectory in trajectory_set.candidates:
-        midpoint = trajectory.point_at(trajectory.length / 2.0)
-        positions[trajectory.id] = (midpoint.lon, midpoint.lat)
+    depths: dict[str, int] = {X0_NODE: 0} if X0_NODE in graph else {}
+    for node in nx.topological_sort(graph) if nx.is_directed_acyclic_graph(graph) else graph.nodes:
+        if node in depths:
+            continue
+        predecessors = [depths[p] for p in graph.predecessors(node) if p in depths]
+        depths[node] = max(predecessors) + 1 if predecessors else 1
+
+    layers: dict[int, list[str]] = {}
+    for node, depth in sorted(depths.items(), key=lambda item: (item[1], item[0])):
+        layers.setdefault(depth, []).append(node)
+
+    positions: dict[str, tuple[float, float]] = {}
+    for depth, nodes in layers.items():
+        offset = (len(nodes) - 1) / 2.0
+        for index, node in enumerate(nodes):
+            positions[node] = (depth * _LAYER_GAP, (offset - index) * _SIBLING_GAP)
     return positions
 
+def _edge_curve(
+    start: tuple[float, float], end: tuple[float, float], bow: float
+) -> tuple[list[float], list[float]]:
+    """Quadratic Bezier from ``start`` to ``end``, bowed perpendicular by ``bow`` layout units."""
+    (x0, y0), (x1, y1) = start, end
+    x0, y0 = x0 + (x1 - x0) * _EDGE_TRIM, y0 + (y1 - y0) * _EDGE_TRIM
+    x1, y1 = x1 - (x1 - x0) * _EDGE_TRIM, y1 - (y1 - y0) * _EDGE_TRIM
 
-def plot_trajectory_graph(
+    dx, dy = x1 - x0, y1 - y0
+    norm = math.hypot(dx, dy) or 1.0
+    control = ((x0 + x1) / 2.0 - dy / norm * bow, (y0 + y1) / 2.0 + dx / norm * bow)
+
+    xs, ys = [], []
+    for step in range(_EDGE_STEPS + 1):
+        u = step / _EDGE_STEPS
+        xs.append((1 - u) ** 2 * x0 + 2 * (1 - u) * u * control[0] + u**2 * x1)
+        ys.append((1 - u) ** 2 * y0 + 2 * (1 - u) * u * control[1] + u**2 * y1)
+    return xs, ys
+
+def _edge_hover(
     trajectory_set: TrajectorySet,
-    ax: Axes | None = None,
-    layout: str = "geographic",
-    show_edge_labels: bool = True,
-) -> Axes:
-    """Draw ``T`` as a directed graph of candidates and the transitions between them.
+    source: str,
+    target: str,
+    data: dict[str, Any],
+    model: TransitionModel | None,
+) -> str:
+    if data.get("is_entry"):
+        return f"<b>{source} &#8594; {target}</b><br>entry: this route may be flown from x_0"
 
-    ``layout`` is ``"geographic"`` (nodes at their trajectory midpoints, so the
-    graph reads like a coarse map) or any of ``"spring"``/``"shell"``/
-    ``"kamada_kawai"`` for a purely structural arrangement. Edge labels name the
-    transition corridor and its length in meters.
-
-    Returns the :class:`~matplotlib.axes.Axes` so callers can add to it or save
-    the figure themselves.
-    """
-    import matplotlib.pyplot as plt
-
-    graph = trajectory_set.to_networkx()
-    if ax is None:
-        _, ax = plt.subplots(figsize=(9, 7))
-
-    positions = _layout(graph, trajectory_set, layout)
-    order = tuple(t.id for t in trajectory_set.trajectories)
-
-    node_colors = [
-        X0_COLOR
-        if node == X0_NODE
-        else color_for(node, TrajectoryRole(graph.nodes[node]["role"]), order)
-        for node in graph.nodes
+    rule = data["rule"]
+    lines = [
+        f"<b>{source} &#8594; {target}</b>",
+        f"may initiate anywhere in {data['initiate_from_m']:.0f}-{data['initiate_to_m']:.0f} m "
+        "of arc length on the source",
     ]
-    node_sizes = [700 if node == X0_NODE else 1100 for node in graph.nodes]
+    limit = rule.max_turn_deg if rule.max_turn_deg is not None else (model.max_turn_deg if model else None)
+    if limit is not None:
+        lines.append(f"turn screen: {limit:.0f}&#176;")
+    if model is not None:
+        family = model.family(trajectory_set.by_id(source), trajectory_set.by_id(target), rule)
+        low, high = family.turn_range
+        lines.append(f"{len(family)} sampled paths ({family.rejected} screened out)")
+        if family.paths:
+            lines.append(f"turns demanded: {low:.0f}-{high:.0f}&#176;")
+    return "<br>".join(lines)
 
-    nx.draw_networkx_edges(
-        graph,
-        positions,
-        ax=ax,
-        edge_color=[TRANSITION_COLOR for _ in graph.edges],
-        width=1.8,
-        arrowsize=18,
-        connectionstyle="arc3,rad=0.12",
-        node_size=node_sizes,
-    )
-    nx.draw_networkx_nodes(
-        graph, positions, ax=ax, node_color=node_colors, node_size=node_sizes, edgecolors="white", linewidths=1.5
-    )
-    # Labels sit just below their node rather than inside it: trajectory ids
-    # are long enough ("t_alt_north") to overflow any readable node marker.
-    label_offset = _label_offset(positions)
-    nx.draw_networkx_labels(
-        graph,
-        {node: (x, y - label_offset) for node, (x, y) in positions.items()},
-        ax=ax,
-        labels={node: node for node in graph.nodes},
-        font_size=9,
-        font_weight="bold",
-        bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "none", "alpha": 0.85},
-    )
+def _node_hover(trajectory_set: TrajectorySet, node: str, data: dict[str, Any], conops: ConopsConfig | None) -> str:
+    if node == X0_NODE:
+        x0 = trajectory_set.x0
+        return (
+            f"<b>x_0</b> - known start state<br>"
+            f"{x0.lat:.5f}, {x0.lon:.5f}<br>{x0.height:.0f} m, t = {x0.time:.0f} s"
+        )
+    trajectory = data["trajectory"]
+    lines = [
+        f"<b>{node}</b>",
+        str(trajectory.metadata.get("name", "")),
+        f"role: {trajectory.role.value}",
+        f"{data['length_m']:.0f} m over {data['duration_s']:.0f} s",
+    ]
+    if conops is not None:
+        tube = conops.tube_for(trajectory)
+        windows = trajectory.windows(conops.window_length)
+        lines.append(f"tube radius: {tube.radius:.0f} m")
+        lines.append(f"{len(windows)} manifest windows of ~{conops.window_length:.0f} m")
+    return "<br>".join(line for line in lines if line)
 
-    if show_edge_labels:
-        labels = {}
-        for source, target, data in graph.edges(data=True):
-            via = data.get("via")
-            labels[(source, target)] = (
-                f"{via}\n{data['length_m']:.0f} m" if via else "direct"
+def transition_graph_figure(
+    trajectory_set: TrajectorySet,
+    conops: ConopsConfig | None = None,
+    model: TransitionModel | None = None,
+) -> go.Figure:
+    """The candidate set ``T`` as an interactive transition graph.
+
+    Nodes are candidate routes plus ``x_0``; edges are the permitted hand-offs.
+    Positions come from :func:`layered_layout` and are structural - deliberately
+    not geographic. Hovering an edge reports where along the source a transition
+    may initiate and, when ``model`` is given, how many paths that admits and
+    the turn angles they demand.
+    """
+    graph = trajectory_set.to_networkx()
+    positions = layered_layout(graph)
+    order = tuple(t.id for t in trajectory_set.trajectories)
+    if model is None and conops is not None:
+        model = conops.transition
+
+    figure = go.Figure()
+    annotations: list[dict[str, Any]] = []
+    midpoints: dict[str, list[Any]] = {"x": [], "y": [], "text": [], "color": []}
+
+    for source, target, data in graph.edges(data=True):
+        start, end = positions[source], positions[target]
+        span = abs(end[0] - start[0]) / _LAYER_GAP
+        color = X0_COLOR if data.get("is_entry") else TRANSITION_COLOR
+        xs, ys = _edge_curve(start, end, bow=_EDGE_BOW * max(0.0, span - 1.0))
+
+        figure.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines",
+                line={"color": color, "width": 1.6},
+                opacity=0.75,
+                hoverinfo="skip",
+                showlegend=False,
             )
-        nx.draw_networkx_edge_labels(
-            graph, positions, ax=ax, edge_labels=labels, font_size=7, label_pos=0.5, rotate=False
+        )
+        annotations.append(
+            {
+                "x": xs[-1],
+                "y": ys[-1],
+                "ax": xs[-2],
+                "ay": ys[-2],
+                "xref": "x",
+                "yref": "y",
+                "axref": "x",
+                "ayref": "y",
+                "showarrow": True,
+                "arrowhead": 3,
+                "arrowsize": 1.4,
+                "arrowwidth": 1.6,
+                "arrowcolor": color,
+                "opacity": 0.85,
+            }
+        )
+        middle = len(xs) // 2
+        midpoints["x"].append(xs[middle])
+        midpoints["y"].append(ys[middle])
+        midpoints["color"].append(color)
+        midpoints["text"].append(_edge_hover(trajectory_set, source, target, data, model))
+
+    figure.add_trace(
+        go.Scatter(
+            x=midpoints["x"],
+            y=midpoints["y"],
+            mode="markers",
+            marker={"size": 13, "color": midpoints["color"], "opacity": 0.45, "symbol": "diamond"},
+            hovertext=midpoints["text"],
+            hoverinfo="text",
+            showlegend=False,
+            name="transitions",
+        )
+    )
+
+    node_x, node_y, node_text, node_hover, node_color = [], [], [], [], []
+    for node, data in graph.nodes(data=True):
+        x, y = positions[node]
+        node_x.append(x)
+        node_y.append(y)
+        node_text.append("x&#8320;" if node == X0_NODE else node)
+        node_hover.append(_node_hover(trajectory_set, node, data, conops))
+        node_color.append(
+            X0_COLOR if node == X0_NODE else color_for(node, TrajectoryRole(data["role"]), order)
         )
 
-    ax.set_title(f"Candidate trajectory set T - {trajectory_set.id}")
-    if layout == "geographic":
-        # networkx's draw helpers hide the axes; the geographic layout is the
-        # one case where the coordinates mean something, so put them back.
-        ax.set_axis_on()
-        ax.tick_params(left=True, bottom=True, labelleft=True, labelbottom=True, labelsize=8)
-        ax.set_xlabel("longitude (deg, WGS84)")
-        ax.set_ylabel("latitude (deg, WGS84)")
-        ax.ticklabel_format(useOffset=False, style="plain")
-        ax.margins(0.16)
-    else:
-        ax.set_axis_off()
-
-    ax.legend(
-        handles=[
-            Line2D([], [], marker="o", linestyle="", color=PRIMARY_COLOR, label=f"primary (t_p = {trajectory_set.primary_id})"),
-            Line2D([], [], marker="o", linestyle="", color=color_for(_first_alternate(trajectory_set), TrajectoryRole.ALTERNATE, order), label="alternate candidate"),
-            Line2D([], [], marker="o", linestyle="", color=X0_COLOR, label="x_0 (start state)"),
-            Line2D([], [], linestyle="-", color=TRANSITION_COLOR, label="transition corridor"),
-        ],
-        loc="best",
-        fontsize=8,
-        frameon=True,
+    figure.add_trace(
+        go.Scatter(
+            x=node_x,
+            y=node_y,
+            mode="markers+text",
+            marker={"size": 30, "color": node_color, "line": {"width": 2, "color": "white"}},
+            text=node_text,
+            textposition="bottom center",
+            textfont={"size": 12, "color": TEXT_COLOR},
+            hovertext=node_hover,
+            hoverinfo="text",
+            showlegend=False,
+            name="routes",
+        )
     )
-    return ax
 
+    for label, color in (("entry from x\u2080", X0_COLOR), ("transition family", TRANSITION_COLOR)):
+        figure.add_trace(
+            go.Scatter(
+                x=[None], y=[None], mode="lines", line={"color": color, "width": 2}, name=label
+            )
+        )
 
-def _label_offset(positions: dict[str, tuple[float, float]]) -> float:
-    """Vertical gap between a node and its label, as a fraction of the layout's height."""
-    ys = [y for _, y in positions.values()]
-    span = max(ys) - min(ys)
-    return 0.075 * (span if span > 0 else 1.0)
+    figure.update_layout(
+        title=(
+            f"Candidate trajectory set T - {trajectory_set.id}"
+            f"<br><sub>structural view: position is graph layer, not geography "
+            f"(t_p = {trajectory_set.primary_id})</sub>"
+        ),
+        annotations=annotations,
+        showlegend=True,
+        legend={"orientation": "h", "yanchor": "bottom", "y": -0.12, "x": 0},
+        hovermode="closest",
+        plot_bgcolor="white",
+        margin={"l": 40, "r": 40, "t": 90, "b": 40},
+        height=480,
+    )
+    figure.update_xaxes(visible=False, range=[-0.5, max(node_x) + 0.5])
+    figure.update_yaxes(visible=False, scaleanchor="x", scaleratio=1)
+    return figure
 
-
-def _first_alternate(trajectory_set: TrajectorySet) -> str:
-    for trajectory in trajectory_set.candidates:
-        if trajectory.role is TrajectoryRole.ALTERNATE:
-            return trajectory.id
-    return trajectory_set.primary_id
-
-
-def _layout(graph: nx.DiGraph, trajectory_set: TrajectorySet, layout: str) -> dict:
-    if layout == "geographic":
-        return geographic_layout(trajectory_set)
-    if layout == "spring":
-        return nx.spring_layout(graph, seed=0)
-    if layout == "shell":
-        return nx.shell_layout(graph)
-    if layout == "kamada_kawai":
-        return nx.kamada_kawai_layout(graph)
-    raise ValueError(f"unknown layout {layout!r} (expected geographic, spring, shell or kamada_kawai)")
-
-
-def plot_trajectory_profile(
-    trajectory: Trajectory,
-    tube: TubeModel,
-    window_length: float,
-    field_of_view: FieldOfView | None = None,
-    agl_provider: AglProvider = height_as_agl,
-    ax: Axes | None = None,
-) -> Axes:
-    """Height and lateral extents of one trajectory against arc length, with window edges.
-
-    The upper trace is height above ground in meters (via ``agl_provider``);
-    the shaded band is the tube's lateral radius, and the outer band adds the
-    FOV ground radius at that height - i.e. how far to either side of the track
-    the manifest for that point has to reach. Dashed verticals are the manifest
-    window boundaries (``window_length`` meters of arc length each).
-
-    Both axes are in meters: arc length along x, meters of height / lateral
-    offset along y.
-    """
-    import matplotlib.pyplot as plt
-
-    if ax is None:
-        _, ax = plt.subplots(figsize=(10, 4))
-
-    samples = 200
-    distances = [trajectory.length * step / samples for step in range(samples + 1)]
-    points = [trajectory.point_at(distance) for distance in distances]
-    agls = [agl_provider(point) for point in points]
-
-    ax.plot(distances, agls, color=PRIMARY_COLOR, lw=2, label="height above ground (m)")
-
-    tube_band = [tube.radius for _ in distances]
-    ax.fill_between(distances, 0, tube_band, color="#0072B2", alpha=0.20, label=f"tube radius {tube.radius:.0f} m")
-    if field_of_view is not None:
-        outer = [tube.radius + field_of_view.ground_radius(agl) for agl in agls]
-        ax.plot(distances, outer, color="#009E73", lw=1.5, ls="--", label="tube + FOV ground radius (m)")
-
-    for window in trajectory.windows(window_length):
-        ax.axvline(window.end_distance, color="#999999", lw=0.8, ls=":")
-    ax.axvline(0.0, color="#999999", lw=0.8, ls=":", label=f"window edges ({window_length:.0f} m)")
-
-    ax.set_xlim(0, trajectory.length)
-    ax.set_ylim(bottom=0)
-    ax.set_xlabel("arc length along trajectory (m)")
-    ax.set_ylabel("meters")
-    ax.set_title(f"{trajectory.id} - {trajectory.length:.0f} m over {trajectory.duration:.0f} s")
-    ax.legend(fontsize=8, loc="upper right")
-    ax.grid(alpha=0.25)
-    return ax
-
-
-def trajectory_set_figure(
+def route_profile_figure(
     trajectory_set: TrajectorySet,
     conops: ConopsConfig,
     agl_provider: AglProvider = height_as_agl,
-) -> Figure:
-    """One figure: the graph of ``T`` on top, a profile per candidate trajectory below.
+    samples: int = 120,
+) -> go.Figure:
+    """Height, tube radius, and camera ground reach against arc length, one row per route.
 
-    A convenience for ``scripts/visualize_trajectories.py`` - the structural
-    view and the per-trajectory geometry side by side, all driven from the same
-    :class:`~csnav.trajectory.config.ConopsConfig` so the tube radius shown is
-    the one the manifests were (or will be) built with.
+    Every quantity on the y-axis is in meters: height above ground (via
+    ``agl_provider``), the tube's lateral radius as a filled band, and - when a
+    camera is configured - the tube radius plus the camera's ground reach, which
+    is how far to either side of the track that point's manifest has to look.
+    Dashed verticals are the manifest window boundaries.
     """
-    import matplotlib.pyplot as plt
+    trajectories = trajectory_set.trajectories
+    figure = make_subplots(
+        rows=len(trajectories),
+        cols=1,
+        shared_xaxes=False,
+        vertical_spacing=min(0.06, 0.9 / max(len(trajectories), 1)),
+        subplot_titles=[
+            f"{t.id} - {t.length:.0f} m over {t.duration:.0f} s" for t in trajectories
+        ],
+    )
+    order = tuple(t.id for t in trajectories)
 
-    candidates = trajectory_set.candidates
-    figure = plt.figure(figsize=(11, 4 + 3 * len(candidates)))
-    grid = figure.add_gridspec(len(candidates) + 2, 1, height_ratios=[2, 2, *[1] * len(candidates)])
+    for row, trajectory in enumerate(trajectories, start=1):
+        tube = conops.tube_for(trajectory)
+        color = color_for(trajectory.id, trajectory.role, order)
+        distances = [trajectory.length * step / samples for step in range(samples + 1)]
+        points = [trajectory.point_at(distance) for distance in distances]
+        agls = [agl_provider(point) for point in points]
 
-    graph_ax = figure.add_subplot(grid[0:2, 0])
-    plot_trajectory_graph(trajectory_set, ax=graph_ax)
-
-    for row, trajectory in enumerate(candidates):
-        profile_ax = figure.add_subplot(grid[row + 2, 0])
-        plot_trajectory_profile(
-            trajectory,
-            conops.tube_for(trajectory),
-            conops.window_length,
-            field_of_view=conops.field_of_view,
-            agl_provider=agl_provider,
-            ax=profile_ax,
+        figure.add_trace(
+            go.Scatter(
+                x=distances,
+                y=[tube.radius] * len(distances),
+                mode="lines",
+                line={"width": 0},
+                fill="tozeroy",
+                fillcolor="rgba(0, 114, 178, 0.18)",
+                name=f"tube {tube.radius:.0f} m",
+                legendgroup="tube",
+                showlegend=row == 1,
+                hovertemplate="tube radius %{y:.0f} m<extra></extra>",
+            ),
+            row=row,
+            col=1,
         )
 
-    figure.tight_layout()
+        if conops.camera is not None:
+            reach = [
+                tube.radius
+                + conops.camera.bounded_ground_reach(
+                    agl, trajectory.distance_to_nearest_waypoint(distance)
+                )
+                for distance, agl in zip(distances, agls)
+            ]
+            figure.add_trace(
+                go.Scatter(
+                    x=distances,
+                    y=reach,
+                    mode="lines",
+                    line={"color": "#009E73", "width": 1.6, "dash": "dash"},
+                    name="tube + camera ground reach",
+                    legendgroup="reach",
+                    showlegend=row == 1,
+                    hovertemplate="search radius %{y:.0f} m at %{x:.0f} m<extra></extra>",
+                ),
+                row=row,
+                col=1,
+            )
+
+        figure.add_trace(
+            go.Scatter(
+                x=distances,
+                y=agls,
+                mode="lines",
+                line={"color": color, "width": 2.5},
+                name="height above ground",
+                legendgroup="agl",
+                showlegend=row == 1,
+                hovertemplate="%{y:.0f} m AGL at %{x:.0f} m<extra></extra>",
+            ),
+            row=row,
+            col=1,
+        )
+
+        for window in trajectory.windows(conops.window_length):
+            figure.add_vline(
+                x=window.end_distance,
+                line={"color": GRID_COLOR, "width": 0.8, "dash": "dot"},
+                row=row,
+                col=1,
+            )
+
+        figure.update_xaxes(title_text="arc length (m)", range=[0, trajectory.length], row=row, col=1)
+        figure.update_yaxes(title_text="meters", rangemode="tozero", row=row, col=1)
+
+    figure.update_layout(
+        title=(
+            f"Route profiles - {trajectory_set.id}"
+            f"<br><sub>window boundaries dotted, every {conops.window_length:.0f} m of arc length</sub>"
+        ),
+        height=260 * len(trajectories) + 120,
+        hovermode="x unified",
+        plot_bgcolor="white",
+        margin={"l": 60, "r": 40, "t": 100, "b": 50},
+    )
     return figure
+
+def route_table_figure(trajectory_set: TrajectorySet) -> go.Figure:
+    """The routes the transition rules permit, as a table.
+
+    Each row is a path through the transition graph - ``t_p`` flown to its end,
+    or ``t_p -> t_alt_north -> the northern return``. None of these is declared
+    anywhere: they are what the rules imply, and each stands for a *family* of
+    flights, since where each hand-off begins is continuous.
+    """
+    routes = trajectory_set.route_paths()
+    lengths = [
+        sum(trajectory_set.by_id(step).length for step in route) for route in routes
+    ]
+    figure = go.Figure(
+        go.Table(
+            header={
+                "values": ["#", "route", "legs", "sum of leg lengths (m)"],
+                "align": "left",
+                "fill_color": "#F2F2F2",
+                "font": {"color": TEXT_COLOR, "size": 12},
+            },
+            cells={
+                "values": [
+                    list(range(1, len(routes) + 1)),
+                    [" &#8594; ".join(route) for route in routes],
+                    [len(route) for route in routes],
+                    [f"{length:,.0f}" for length in lengths],
+                ],
+                "align": "left",
+                "height": 26,
+                "font": {"size": 12},
+            },
+        )
+    )
+    figure.update_layout(
+        title=(
+            "Routes permitted by the transition rules"
+            "<br><sub>each is a path through the graph, and each stands for a family of flights - "
+            "a hand-off may begin anywhere along its source. Lengths sum the legs end to end; a real "
+            "flight cuts each corner via a generated transition and flies less.</sub>"
+        ),
+        height=140 + 30 * max(len(routes), 1),
+        margin={"l": 40, "r": 40, "t": 100, "b": 20},
+    )
+    return figure
+
+def write_report(
+    figures: Sequence[go.Figure] | Iterable[go.Figure],
+    path: str | Path,
+    title: str = "Trajectory set",
+) -> Path:
+    """Write several Plotly figures into one self-contained HTML page.
+
+    Plotly's JavaScript is inlined into the first figure, so the page opens
+    without network access - the same property the folium maps have for
+    everything except their basemap tiles.
+    """
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    # The first block inlines plotly.js; the rest must neither re-inline it (the
+    # library is ~3 MB) nor fall back to a CDN, which would break offline.
+    blocks = [
+        figure.to_html(full_html=False, include_plotlyjs=(index == 0))
+        for index, figure in enumerate(figures)
+    ]
+    destination.write_text(
+        "<!DOCTYPE html>\n<html><head><meta charset='utf-8'>"
+        f"<title>{title}</title>"
+        "<style>body{margin:0;padding:16px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;"
+        "background:#FFFFFF;color:#222222}</style>"
+        "</head><body>\n" + "\n".join(blocks) + "\n</body></html>\n",
+        encoding="utf-8",
+    )
+    return destination

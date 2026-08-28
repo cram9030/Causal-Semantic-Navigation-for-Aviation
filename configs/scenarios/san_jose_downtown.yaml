@@ -2,30 +2,37 @@
 #
 # This is the versioned home of the Phase 1 inputs (docs/INTEGRATION_PLAN.md
 # §3.2 / §5): the candidate trajectory set T, the primary trajectory t_p, the
-# known start state x_0, and the CONOPS parameters the tube and manifest
-# builder are driven by.
+# known start state x_0, and the CONOPS parameters the tube, camera, and
+# transition model are driven by.
 #
 # Units: lat/lon in decimal degrees (WGS84, EPSG:4326); height_m in meters
 # above the WGS84 ellipsoid; time_s in seconds from flight-plan start; every
-# distance/radius in meters.
+# distance/radius in meters; every angle in degrees.
 #
 # The heights below sit ~310 m above San Jose's ~35 m ground elevation, i.e.
 # ~1000 ft AGL - inside the 200-4000 ft AGL envelope the project targets.
 # Waypoint times assume ~45 m/s (~87 kt) ground speed.
+#
+# Note what is NOT here: transition geometry. A transition is not known before
+# flight - it may begin anywhere along the route being flown - so the file
+# declares only which hand-offs are permitted, and the geometry is generated
+# (see csnav.trajectory.transition).
 
 id: san_jose_downtown
 description: >
-  Northeast-bound survey across downtown San Jose with two alternates, the
-  transition corridors between them, and a return path to x_0.
+  Northeast-bound survey across downtown San Jose with two alternates, a
+  return route out of each, and the permitted transitions between them.
 
 trajectory_set:
   id: san_jose_downtown
   primary: t_p
 
-  # x_0 - the known starting state (integration plan §3.2).
+  # x_0 - the known starting state (integration plan §3.2). Every outbound
+  # candidate begins here.
   x0: {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 0.0}
 
   trajectories:
+    # --- outbound candidates ---
     - id: t_p
       role: primary
       metadata: {name: "Downtown NE transit"}
@@ -53,57 +60,134 @@ trajectory_set:
         - {lat: 37.3441, lon: -121.8497, height_m: 380.0, time_s: 87.0}
         - {lat: 37.3560, lon: -121.8365, height_m: 350.0, time_s: 126.0}
 
-    # Transition corridors. These are flown between candidates rather than
-    # being candidates themselves, so they carry role: transition and declare
-    # which pair they join.
-    - id: x_tp_to_north
-      role: transition
-      connects: [t_p, t_alt_north]
-      waypoints:
-        - {lat: 37.3421, lon: -121.8757, height_m: 380.0, time_s: 0.0}
-        - {lat: 37.3455, lon: -121.8720, height_m: 390.0, time_s: 11.0}
-        - {lat: 37.3468, lon: -121.8792, height_m: 400.0, time_s: 26.0}
-
-    - id: x_tp_to_east
-      role: transition
-      connects: [t_p, t_alt_east]
-      waypoints:
-        - {lat: 37.3421, lon: -121.8757, height_m: 380.0, time_s: 0.0}
-        - {lat: 37.3392, lon: -121.8712, height_m: 380.0, time_s: 11.0}
-        - {lat: 37.3372, lon: -121.8688, height_m: 380.0, time_s: 18.0}
-
-    - id: x_return_x0
-      role: transition
-      connects: [t_p, x0]
+    # --- return routes ---
+    # One per outbound candidate, each running from that candidate's far end
+    # back to x_0. They are ordinary candidate trajectories: a return is a
+    # route the aircraft may fly, and the machinery that gets it onto one is
+    # the same generated-transition machinery as any other hand-off. Because a
+    # transition may initiate anywhere along the outbound leg, an abort part
+    # way out is covered without declaring anything extra.
+    - id: t_return_via_p
+      role: alternate
+      metadata: {name: "Return from the primary's far end"}
       waypoints:
         - {lat: 37.3648, lon: -121.8402, height_m: 350.0, time_s: 0.0}
-        - {lat: 37.3500, lon: -121.8620, height_m: 380.0, time_s: 56.0}
-        - {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 130.0}
+        - {lat: 37.3430, lon: -121.8600, height_m: 380.0, time_s: 66.0}
+        - {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 134.0}
 
-  # Edges of the trajectory graph. "x0" is the reserved node id for the known
-  # start state, so the return path has somewhere to point.
+    - id: t_return_via_north
+      role: alternate
+      metadata: {name: "Return from the northern alternate's far end"}
+      waypoints:
+        - {lat: 37.3690, lon: -121.8419, height_m: 350.0, time_s: 0.0}
+        - {lat: 37.3560, lon: -121.8680, height_m: 400.0, time_s: 61.0}
+        - {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 138.0}
+
+    - id: t_return_via_east
+      role: alternate
+      metadata: {name: "Return from the eastern alternate's far end"}
+      waypoints:
+        - {lat: 37.3560, lon: -121.8365, height_m: 350.0, time_s: 0.0}
+        - {lat: 37.3330, lon: -121.8570, height_m: 380.0, time_s: 70.0}
+        - {lat: 37.3300, lon: -121.8900, height_m: 350.0, time_s: 135.0}
+
+  # Permitted hand-offs - the edges of the trajectory graph. "x0" is the
+  # reserved node id for the known start state; an edge out of it marks a route
+  # that may be flown from the start, and carries no geometry of its own.
+  #
+  # Every other edge is a *family* of transitions, not one path: it may begin
+  # at any arc length along its source, and the model generates the curve for
+  # each initiation point. Optional per-edge keys narrow that:
+  #   initiate_from_m / initiate_to_m - restrict where along the source a
+  #     hand-off may begin (for a target only valid past some point)
+  #   max_turn_deg / tangent_gain     - override the conops.transition defaults
+  #
+  # Composite routes need no declaration: t_p -> t_alt_north ->
+  # t_return_via_north is a path through these edges, and route enumeration
+  # finds it (TrajectorySet.route_paths).
   transitions:
     - {source: x0, target: t_p}
-    - {source: t_p, target: t_alt_north, via: x_tp_to_north}
-    - {source: t_p, target: t_alt_east, via: x_tp_to_east}
-    - {source: t_p, target: x0, via: x_return_x0}
+    - {source: x0, target: t_alt_north}
+    - {source: x0, target: t_alt_east}
+
+    - {source: t_p, target: t_alt_north}
+    - {source: t_p, target: t_alt_east}
+
+    # Return edges relax the turn screen. Diverting onto a return route is a
+    # deliberate turn-around, so departure turns of 150-180 deg are the normal
+    # case here, not a sign of an infeasible path - the conops-level screen
+    # below would reject every one of them.
+    - {source: t_p, target: t_return_via_p, max_turn_deg: 180.0}
+    - {source: t_alt_north, target: t_return_via_north, max_turn_deg: 180.0}
+    - {source: t_alt_east, target: t_return_via_east, max_turn_deg: 180.0}
 
 conops:
   label: baseline_250m
+
   # The RNP-style containment radius. Deliberately a config value, not a
   # constant anywhere in code: it is swept across CONOPS/altitude cases
   # (integration plan §8, CLAUDE.md core decision 4).
   tube_radius_m: 250.0
-  # Transition corridors get their own, wider radius here. Set this to null to
-  # have them share tube_radius_m instead - §8 leaves that choice open.
+
+  # Transition families get their own, wider radius here - they are the least
+  # constrained part of the flight. Set this to null to have them share
+  # tube_radius_m instead; §8 leaves that choice open.
   transition_tube_radius_m: 400.0
-  # Arc length of one manifest window, in meters.
+
+  # Arc length of one manifest window, in meters. Each window gets its own
+  # precomputed landmark manifest (§3.3), so this trades manifest count against
+  # how much ground each one has to cover: halving it doubles the number of
+  # manifests but tightens each one's footprint. A trajectory is divided into
+  # round(length / window_length_m) equal windows, so the value is a target
+  # rather than an exact stride - that avoids leaving a short remainder window
+  # whose manifest would nearly duplicate its neighbour's.
   window_length_m: 1000.0
-  # Nadir-pointing camera; used to grow each window's tube corridor out to
-  # what could actually be seen from inside it.
-  field_of_view:
-    horizontal_deg: 60.0
-    vertical_deg: 45.0
+
+  camera:
+    field_of_view:
+      horizontal_deg: 60.0
+      vertical_deg: 45.0
+    # Sensor mounting relative to the body frame (X forward, Y right, Z down).
+    # All zeros is nadir - straight down - which is what the first prototype
+    # flies. A forward- or side-looking mounting is a change here, not in code.
+    pose:
+      roll_deg: 0.0
+      pitch_deg: 0.0
+      yaw_deg: 0.0
+      lever_arm_m: [0.0, 0.0, 0.0]
+    # How far off level the aircraft is allowed to be when the ground footprint
+    # is sized. Real vehicles bank and pitch - most of all around waypoints,
+    # where the turns are - which swings the footprint well off nadir. Zero
+    # here means the first proof of concept sizes footprints as if the aircraft
+    # were level; raise maneuver_roll_deg and maneuver_radius_m to switch the
+    # allowance on.
+    attitude_margin:
+      roll_deg: 0.0
+      pitch_deg: 0.0
+      maneuver_roll_deg: 0.0
+      maneuver_pitch_deg: 0.0
+      maneuver_radius_m: 0.0
+
+  transition:
+    # Hermite endpoint tangents are tangent_gain x the straight-line distance
+    # between the transition's endpoints, so the curve's shape is scale-free:
+    # 1.0 bulges moderately, smaller is tighter.
+    tangent_gain: 1.0
+    # Crude feasibility screen: drop initiations demanding a sharper heading
+    # change than this at either end. Stands in for a real dynamics model, and
+    # is what would stop a near-orthogonal alternate from generating diverts no
+    # aircraft could fly. It cannot distinguish a wanted reversal (a return)
+    # from an unwanted one, which is why the return edges above override it.
+    max_turn_deg: 120.0
+    # Initiation points sampled across each edge's domain. The real family is
+    # continuous in arc length; this is the finite stand-in used to draw it and
+    # to build manifests over.
+    samples: 12
+    # Vertices per generated curve.
+    resolution: 24
+    # Fallback ground speed (m/s) when the source's own schedule gives none.
+    speed_mps: 45.0
+
   # DPW imagery cache level the manifests record tiles at. Level 18 is ~0.6
   # m/px in Web Mercator - coarse enough that a whole route's tile set stays
   # tractable, fine enough to see street geometry.

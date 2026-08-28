@@ -40,6 +40,11 @@ TILE_COLOR = "#444444"
 LANDMARK_COLOR = "#F0C808"
 INTERSECTION_COLOR = "#FFFFFF"
 
+#: Neutral ink and gridline colours, shared by the Plotly figures and the map
+#: tooltips so the two views read as one set.
+TEXT_COLOR = "#222222"
+GRID_COLOR = "#999999"
+
 ROLE_LABELS = {
     TrajectoryRole.PRIMARY: "primary (t_p)",
     TrajectoryRole.ALTERNATE: "alternate",

@@ -6,8 +6,8 @@ versioned config files rather than hardcoded constants, because several of them
 module is that boundary: a YAML scenario file in ``configs/scenarios/`` is
 loaded into a :class:`Scenario`, and every downstream component
 (:class:`~csnav.trajectory.tube.TubeModel`,
-:class:`~csnav.trajectory.manifest_builder.ManifestBuilder`, the visualization
-tools) takes its parameters from there.
+:class:`~csnav.trajectory.transition.TransitionModel`, the manifest builder,
+the visualization tools) takes its parameters from there.
 
 :meth:`ConopsConfig.with_tube_radius` is the sweep entry point: it returns a
 new config at a different radius, so re-running a study is a parameter change,
@@ -22,8 +22,10 @@ from typing import Any, Mapping
 
 import yaml
 
+from csnav.geometry.camera import AttitudeMargin, Camera, SensorPose
 from csnav.geometry.fov import FieldOfView
-from csnav.trajectory.trajectory import Trajectory, TrajectorySet, Transition
+from csnav.trajectory.trajectory import Trajectory, TrajectorySet, TransitionRule
+from csnav.trajectory.transition import TransitionModel
 from csnav.trajectory.tube import TubeModel
 from csnav.trajectory.waypoints import TrajectoryRole, Waypoint
 
@@ -37,10 +39,13 @@ class ConopsConfig:
     """The swept experimental parameters for one concept-of-operations case.
 
     Units: ``tube_radius``, ``transition_tube_radius`` and ``window_length`` in
-    meters; ``field_of_view`` in degrees. ``per_trajectory_radius`` maps a
-    trajectory id to its own radius in meters, overriding the defaults.
+    meters. ``per_trajectory_radius`` maps a trajectory id to its own radius in
+    meters, overriding the defaults. ``camera`` carries the field of view, the
+    sensor's mounting pose, and the attitude margin used when sizing ground
+    footprints; ``transition`` carries the parameters of the generated
+    transition families.
 
-    ``transition_tube_radius`` of ``None`` means transition corridors share the
+    ``transition_tube_radius`` of ``None`` means transition families share the
     primary tube radius - integration plan §8 lists "whether the
     transition-corridor tube should share the primary trajectory's radius or be
     its own case" as still open, so both are expressible and the choice is
@@ -49,7 +54,8 @@ class ConopsConfig:
 
     tube_radius: float
     window_length: float
-    field_of_view: FieldOfView | None = None
+    camera: Camera | None = None
+    transition: TransitionModel = field(default_factory=TransitionModel)
     transition_tube_radius: float | None = None
     per_trajectory_radius: dict[str, float] = field(default_factory=dict)
     tile_level: int | None = None
@@ -68,6 +74,11 @@ class ConopsConfig:
             if radius <= 0.0:
                 raise ScenarioConfigError(f"tube radius for {trajectory_id!r} must be > 0, got {radius}")
 
+    @property
+    def field_of_view(self) -> FieldOfView | None:
+        """The camera's cone angles, or ``None`` when no camera is configured."""
+        return None if self.camera is None else self.camera.field_of_view
+
     def radius_for(self, trajectory: Trajectory) -> float:
         """Tube radius in meters for one trajectory: explicit override, else role default."""
         if trajectory.id in self.per_trajectory_radius:
@@ -85,9 +96,8 @@ class ConopsConfig:
 
         Per-trajectory overrides are cleared, so a sweep sets one radius across
         the whole set rather than silently keeping a pinned override for some
-        trajectories. The transition radius is kept only if it was explicitly
-        set relative to nothing (i.e. it stays ``None`` when it was ``None``,
-        so transitions keep tracking the primary radius).
+        trajectories. A transition radius that was tracking the primary keeps
+        tracking it; one that was set independently moves to the new value.
         """
         return replace(
             self,
@@ -97,23 +107,56 @@ class ConopsConfig:
             label=label if label is not None else self.label,
         )
 
+    def with_transition_samples(self, samples: int) -> "ConopsConfig":
+        """Copy of this config sampling each transition family more or less densely.
+
+        Sampling density is a fidelity knob, not a modelling parameter: the real
+        family is continuous in initiation arc length, and this only decides how
+        finely it is stood in for. Denser for manifests, sparser to draw.
+        """
+        return replace(self, transition=self.transition.with_samples(samples))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "tube_radius_m": self.tube_radius,
             "window_length_m": self.window_length,
             "transition_tube_radius_m": self.transition_tube_radius,
             "per_trajectory_tube_radius_m": dict(self.per_trajectory_radius),
-            "field_of_view": (
-                {
-                    "horizontal_deg": self.field_of_view.horizontal_deg,
-                    "vertical_deg": self.field_of_view.vertical_deg,
-                }
-                if self.field_of_view
-                else None
-            ),
+            "camera": _camera_to_dict(self.camera),
+            "transition": {
+                "tangent_gain": self.transition.tangent_gain,
+                "max_turn_deg": self.transition.max_turn_deg,
+                "samples": self.transition.samples,
+                "resolution": self.transition.resolution,
+                "speed_mps": self.transition.speed,
+            },
             "tile_level": self.tile_level,
             "label": self.label,
         }
+
+
+def _camera_to_dict(camera: Camera | None) -> dict[str, Any] | None:
+    if camera is None:
+        return None
+    return {
+        "field_of_view": {
+            "horizontal_deg": camera.field_of_view.horizontal_deg,
+            "vertical_deg": camera.field_of_view.vertical_deg,
+        },
+        "pose": {
+            "roll_deg": camera.pose.roll_deg,
+            "pitch_deg": camera.pose.pitch_deg,
+            "yaw_deg": camera.pose.yaw_deg,
+            "lever_arm_m": list(camera.pose.lever_arm),
+        },
+        "attitude_margin": {
+            "roll_deg": camera.attitude_margin.roll_deg,
+            "pitch_deg": camera.attitude_margin.pitch_deg,
+            "maneuver_roll_deg": camera.attitude_margin.maneuver_roll_deg,
+            "maneuver_pitch_deg": camera.attitude_margin.maneuver_pitch_deg,
+            "maneuver_radius_m": camera.attitude_margin.maneuver_radius,
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -166,20 +209,93 @@ def _trajectory_from_config(raw: Mapping[str, Any]) -> Trajectory:
         raise ScenarioConfigError("every trajectory needs an 'id'") from exc
 
     role_name = str(raw.get("role", TrajectoryRole.ALTERNATE.value)).lower()
+    if role_name == TrajectoryRole.TRANSITION.value:
+        raise ScenarioConfigError(
+            f"trajectory {trajectory_id!r} declares role: transition, but transitions are not authored - "
+            "they are generated from a transitions: rule (see csnav.trajectory.transition). A route that "
+            "returns to x_0 is an ordinary candidate trajectory ending at x_0."
+        )
     try:
         role = TrajectoryRole(role_name)
     except ValueError as exc:
-        roles = ", ".join(item.value for item in TrajectoryRole)
-        raise ScenarioConfigError(f"trajectory {trajectory_id!r} has unknown role {role_name!r} (expected: {roles})") from exc
+        roles = ", ".join(item.value for item in TrajectoryRole if item is not TrajectoryRole.TRANSITION)
+        raise ScenarioConfigError(
+            f"trajectory {trajectory_id!r} has unknown role {role_name!r} (expected: {roles})"
+        ) from exc
 
     waypoints_raw = raw.get("waypoints") or []
     waypoints = tuple(
         _waypoint_from_config(item, index, trajectory_id) for index, item in enumerate(waypoints_raw)
     )
-    connects_raw = raw.get("connects")
-    connects = (str(connects_raw[0]), str(connects_raw[1])) if connects_raw else None
     metadata = dict(raw.get("metadata") or {})
-    return Trajectory(id=trajectory_id, waypoints=waypoints, role=role, connects=connects, metadata=metadata)
+    return Trajectory(id=trajectory_id, waypoints=waypoints, role=role, metadata=metadata)
+
+
+def _rule_from_config(raw: Mapping[str, Any]) -> TransitionRule:
+    try:
+        source, target = str(raw["source"]), str(raw["target"])
+    except KeyError as exc:
+        raise ScenarioConfigError(f"every transition needs a {exc.args[0]!r}") from exc
+    return TransitionRule(
+        source=source,
+        target=target,
+        initiate_from=_optional_float(raw, "initiate_from_m"),
+        initiate_to=_optional_float(raw, "initiate_to_m"),
+        max_turn_deg=_optional_float(raw, "max_turn_deg"),
+        tangent_gain=_optional_float(raw, "tangent_gain"),
+        label=raw.get("label"),
+    )
+
+
+def _optional_float(raw: Mapping[str, Any], key: str) -> float | None:
+    value = raw.get(key)
+    return None if value is None else float(value)
+
+
+def _camera_from_config(raw: Mapping[str, Any] | None) -> Camera | None:
+    if not raw:
+        return None
+    fov_raw = raw.get("field_of_view")
+    if not fov_raw:
+        raise ScenarioConfigError("conops.camera needs a field_of_view section")
+
+    pose_raw = raw.get("pose") or {}
+    lever = pose_raw.get("lever_arm_m") or (0.0, 0.0, 0.0)
+    margin_raw = raw.get("attitude_margin") or {}
+
+    return Camera(
+        field_of_view=FieldOfView(
+            horizontal_deg=float(fov_raw["horizontal_deg"]),
+            vertical_deg=None if fov_raw.get("vertical_deg") is None else float(fov_raw["vertical_deg"]),
+        ),
+        pose=SensorPose(
+            roll_deg=float(pose_raw.get("roll_deg", 0.0)),
+            pitch_deg=float(pose_raw.get("pitch_deg", 0.0)),
+            yaw_deg=float(pose_raw.get("yaw_deg", 0.0)),
+            lever_arm=tuple(float(value) for value in lever),
+        ),
+        attitude_margin=AttitudeMargin(
+            roll_deg=float(margin_raw.get("roll_deg", 0.0)),
+            pitch_deg=float(margin_raw.get("pitch_deg", 0.0)),
+            maneuver_roll_deg=float(margin_raw.get("maneuver_roll_deg", 0.0)),
+            maneuver_pitch_deg=float(margin_raw.get("maneuver_pitch_deg", 0.0)),
+            maneuver_radius=float(margin_raw.get("maneuver_radius_m", 0.0)),
+        ),
+    )
+
+
+def _transition_from_config(raw: Mapping[str, Any] | None) -> TransitionModel:
+    if not raw:
+        return TransitionModel()
+    defaults = TransitionModel()
+    max_turn = raw.get("max_turn_deg", defaults.max_turn_deg)
+    return TransitionModel(
+        tangent_gain=float(raw.get("tangent_gain", defaults.tangent_gain)),
+        max_turn_deg=None if max_turn is None else float(max_turn),
+        samples=int(raw.get("samples", defaults.samples)),
+        resolution=int(raw.get("resolution", defaults.resolution)),
+        speed=float(raw.get("speed_mps", defaults.speed)),
+    )
 
 
 def _conops_from_config(raw: Mapping[str, Any]) -> ConopsConfig:
@@ -187,20 +303,12 @@ def _conops_from_config(raw: Mapping[str, Any]) -> ConopsConfig:
         raise ScenarioConfigError(
             "conops.tube_radius_m is required - the tube radius is a swept input and has no default"
         )
-    fov_raw = raw.get("field_of_view")
-    field_of_view = (
-        FieldOfView(
-            horizontal_deg=float(fov_raw["horizontal_deg"]),
-            vertical_deg=None if fov_raw.get("vertical_deg") is None else float(fov_raw["vertical_deg"]),
-        )
-        if fov_raw
-        else None
-    )
     transition_raw = raw.get("transition_tube_radius_m")
     return ConopsConfig(
         tube_radius=float(raw["tube_radius_m"]),
         window_length=float(raw.get("window_length_m", 1000.0)),
-        field_of_view=field_of_view,
+        camera=_camera_from_config(raw.get("camera")),
+        transition=_transition_from_config(raw.get("transition")),
         transition_tube_radius=None if transition_raw is None else float(transition_raw),
         per_trajectory_radius={
             str(key): float(value) for key, value in (raw.get("per_trajectory_tube_radius_m") or {}).items()
@@ -236,14 +344,7 @@ def scenario_from_dict(raw: Mapping[str, Any], source_path: Path | None = None) 
             )
         primary_id = primaries[0]
 
-    transitions = tuple(
-        Transition(
-            source=str(item["source"]),
-            target=str(item["target"]),
-            via=None if item.get("via") is None else str(item["via"]),
-        )
-        for item in set_raw.get("transitions") or []
-    )
+    transitions = tuple(_rule_from_config(item) for item in set_raw.get("transitions") or [])
 
     trajectory_set = TrajectorySet(
         id=str(set_raw.get("id", raw.get("id", "trajectory_set"))),

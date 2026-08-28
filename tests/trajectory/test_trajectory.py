@@ -8,6 +8,8 @@ validates the ENU frame these build on.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from pyproj import Geod
 
@@ -16,7 +18,7 @@ from csnav.trajectory.trajectory import (
     Trajectory,
     TrajectoryError,
     TrajectorySet,
-    Transition,
+    TransitionRule,
 )
 from csnav.trajectory.waypoints import TrajectoryRole, Waypoint
 
@@ -109,8 +111,8 @@ def test_window_for_distance_selects_the_containing_window(due_east):
     assert window.index == 2
 
 
-def test_short_trajectory_yields_exactly_one_window(corridor):
-    assert len(corridor.windows(10_000.0)) == 1
+def test_trajectory_shorter_than_a_window_yields_exactly_one(due_east):
+    assert len(due_east.windows(10_000.0)) == 1
 
 
 def test_segment_keeps_interior_corner_vertices(dogleg):
@@ -144,32 +146,96 @@ def test_trajectory_rejects_non_monotonic_times():
         )
 
 
-def test_transition_trajectory_must_declare_what_it_connects():
-    with pytest.raises(TrajectoryError, match="must declare"):
-        Trajectory(
-            id="orphan",
-            waypoints=(
-                Waypoint(lat=ORIGIN_LAT, lon=ORIGIN_LON, time=0.0),
-                Waypoint(lat=ORIGIN_LAT, lon=ORIGIN_LON + 0.01, time=10.0),
-            ),
-            role=TrajectoryRole.TRANSITION,
-        )
-
-
-def test_set_graph_has_candidate_nodes_x0_and_transition_edges(trajectory_set):
+def test_set_graph_has_a_node_per_route_plus_x0(trajectory_set):
     graph = trajectory_set.to_networkx()
-    # Transition corridors are edge attributes, not nodes of their own.
-    assert set(graph.nodes) == {X0_NODE, "due_east", "due_north"}
-    assert graph.edges["due_east", "due_north"]["via"] == "x_east_to_north"
-    assert graph.edges["due_east", "due_north"]["length_m"] > 0.0
-    assert graph.edges[X0_NODE, "due_east"]["via"] is None
+    assert set(graph.nodes) == {X0_NODE, "due_east", "parallel_north"}
     assert graph.graph["primary"] == "due_east"
 
 
-def test_set_separates_candidates_from_corridors(trajectory_set):
-    assert [t.id for t in trajectory_set.candidates] == ["due_east", "due_north"]
-    assert [t.id for t in trajectory_set.corridors] == ["x_east_to_north"]
-    assert trajectory_set.primary.id == "due_east"
+def test_set_graph_edges_carry_the_rule_not_geometry(trajectory_set):
+    """Transitions are not known before flight, so the edge holds a rule, not a path."""
+    graph = trajectory_set.to_networkx()
+    edge = graph.edges["due_east", "parallel_north"]
+
+    assert isinstance(edge["rule"], TransitionRule)
+    assert edge["initiate_from_m"] == 0.0
+    assert edge["initiate_to_m"] == pytest.approx(trajectory_set.by_id("due_east").length)
+    assert edge["is_entry"] is False
+    assert graph.edges[X0_NODE, "due_east"]["is_entry"] is True
+
+
+def test_narrowed_initiation_window_reaches_the_graph(due_east, parallel_north):
+    trajectory_set = TrajectorySet(
+        id="narrowed",
+        trajectories=(due_east, parallel_north),
+        primary_id="due_east",
+        x0=due_east.waypoints[0],
+        transitions=(
+            TransitionRule(source="due_east", target="parallel_north", initiate_from=500.0, initiate_to=1500.0),
+        ),
+    )
+    edge = trajectory_set.to_networkx().edges["due_east", "parallel_north"]
+    assert (edge["initiate_from_m"], edge["initiate_to_m"]) == (500.0, 1500.0)
+
+
+def test_entry_ids_come_from_x0_rules(trajectory_set):
+    assert trajectory_set.entry_ids() == ("due_east",)
+
+
+def test_every_route_is_an_entry_when_no_rule_mentions_x0(due_east, parallel_north):
+    trajectory_set = TrajectorySet(
+        id="no_entry_rules",
+        trajectories=(due_east, parallel_north),
+        primary_id="due_east",
+        x0=due_east.waypoints[0],
+        transitions=(TransitionRule(source="due_east", target="parallel_north"),),
+    )
+    assert set(trajectory_set.entry_ids()) == {"due_east", "parallel_north"}
+
+
+def test_terminal_routes_are_those_with_no_onward_transition(trajectory_set):
+    assert trajectory_set.terminal_ids() == ("parallel_north",)
+
+
+def test_route_paths_enumerate_composite_routes(due_east, parallel_north, dogleg):
+    """A composed route needs no declaration - it is a path through the rules."""
+    trajectory_set = TrajectorySet(
+        id="chain",
+        trajectories=(due_east, parallel_north, dogleg),
+        primary_id="due_east",
+        x0=due_east.waypoints[0],
+        transitions=(
+            TransitionRule(source=X0_NODE, target="due_east"),
+            TransitionRule(source="due_east", target="parallel_north"),
+            TransitionRule(source="due_east", target="dogleg"),
+            TransitionRule(source="parallel_north", target="dogleg"),
+        ),
+    )
+    routes = trajectory_set.route_paths()
+
+    assert ("due_east", "parallel_north", "dogleg") in routes
+    assert ("due_east", "dogleg") in routes
+    assert all(route[0] in trajectory_set.entry_ids() for route in routes)
+
+
+def test_authored_transition_trajectories_are_refused(due_east):
+    """Transition geometry is generated, never authored into the set."""
+    corridor = Trajectory(
+        id="hand_drawn",
+        waypoints=(
+            Waypoint(lat=ORIGIN_LAT, lon=ORIGIN_LON, time=0.0),
+            Waypoint(lat=ORIGIN_LAT + 0.01, lon=ORIGIN_LON, time=30.0),
+        ),
+        role=TrajectoryRole.TRANSITION,
+        connects=("due_east", "somewhere"),
+    )
+    with pytest.raises(TrajectoryError, match="authored transition trajectories"):
+        TrajectorySet(
+            id="bad",
+            trajectories=(due_east, corridor),
+            primary_id="due_east",
+            x0=due_east.waypoints[0],
+        )
 
 
 def test_set_bounds_cover_every_waypoint(trajectory_set):
@@ -195,7 +261,19 @@ def test_set_rejects_a_transition_to_an_unknown_endpoint(due_east):
             trajectories=(due_east,),
             primary_id="due_east",
             x0=due_east.waypoints[0],
-            transitions=(Transition(source="due_east", target="nowhere"),),
+            transitions=(TransitionRule(source="due_east", target="nowhere"),),
+        )
+
+
+def test_a_transition_targeting_x0_is_refused(due_east):
+    """A return is a route ending at x_0, not an edge pointing at the start state."""
+    with pytest.raises(TrajectoryError, match="model a return as its own"):
+        TrajectorySet(
+            id="bad",
+            trajectories=(due_east,),
+            primary_id="due_east",
+            x0=due_east.waypoints[0],
+            transitions=(TransitionRule(source="due_east", target=X0_NODE),),
         )
 
 
@@ -204,3 +282,60 @@ def test_geojson_round_trips_through_coordinates(due_east):
     assert feature["geometry"]["type"] == "LineString"
     assert feature["geometry"]["coordinates"][0] == [ORIGIN_LON, ORIGIN_LAT]
     assert feature["properties"]["role"] == "primary"
+
+
+# ----- direction, projection, speed ------------------------------------------
+
+
+def test_heading_is_degrees_clockwise_from_north(due_east, dogleg):
+    assert due_east.heading_at(0.0) == pytest.approx(90.0, abs=0.5)
+    # The dogleg's second leg runs due north; heading wraps, so compare on the circle.
+    north = dogleg.heading_at(dogleg.length - 10.0)
+    assert min(north, 360.0 - north) == pytest.approx(0.0, abs=0.5)
+
+
+def test_tangent_is_a_unit_vector_along_the_leg(due_east):
+    east, north, up = due_east.tangent_at(500.0)
+    assert math.sqrt(east**2 + north**2 + up**2) == pytest.approx(1.0)
+    assert east == pytest.approx(1.0, abs=1e-3)
+
+
+def test_project_recovers_the_arc_length_of_a_point_on_the_track(dogleg):
+    for distance in (0.0, 900.0, 2500.0, dogleg.length):
+        point = dogleg.point_at(distance)
+        assert dogleg.project(point.lat, point.lon) == pytest.approx(distance, abs=1.0)
+
+
+def test_project_is_the_nearest_point_for_an_off_track_position(due_east):
+    """An off-track point projects to the track position abeam it."""
+    on_track = due_east.point_at(1200.0)
+    offset_lon, offset_lat, _ = _GEOD.fwd(on_track.lon, on_track.lat, 0.0, 400.0)
+    assert due_east.project(offset_lat, offset_lon) == pytest.approx(1200.0, abs=1.0)
+
+
+def test_project_clamps_beyond_either_end(due_east):
+    before_lon, before_lat, _ = _GEOD.fwd(
+        due_east.waypoints[0].lon, due_east.waypoints[0].lat, 270.0, 1000.0
+    )
+    assert due_east.project(before_lat, before_lon) == pytest.approx(0.0, abs=1.0)
+
+
+def test_distance_to_nearest_waypoint_is_zero_at_a_waypoint(dogleg):
+    corner = dogleg.cumulative_distances[1]
+    assert dogleg.distance_to_nearest_waypoint(corner) == pytest.approx(0.0, abs=1e-6)
+    assert dogleg.distance_to_nearest_waypoint(corner - 300.0) == pytest.approx(300.0, abs=1.0)
+
+
+def test_speed_at_follows_the_flight_plan_schedule(due_east):
+    assert due_east.speed_at(500.0) == pytest.approx(due_east.length / 100.0, rel=1e-9)
+
+
+def test_speed_at_is_zero_when_the_plan_gives_no_duration():
+    stalled = Trajectory(
+        id="stalled",
+        waypoints=(
+            Waypoint(lat=ORIGIN_LAT, lon=ORIGIN_LON, time=5.0),
+            Waypoint(lat=ORIGIN_LAT, lon=ORIGIN_LON + 0.01, time=5.0),
+        ),
+    )
+    assert stalled.speed_at(100.0) == 0.0

@@ -152,18 +152,45 @@ print a single point's elevation rather than fetching a raster. See
 [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
 the full story of how this data source was chosen.
 
-## Phase 1: trajectory set, tubes, and precomputed manifests
+## Phase 1: trajectory set, transitions, tubes, and precomputed manifests
 
 This phase defines the candidate trajectory set `T`, the primary trajectory
-`t_p`, the known start state `x_0`, and the RNP-style containment tube; builds
-the offline per-window landmark manifests from those; and provides the
-visualization tools for reviewing all of it. See
-[`docs/phase1_trajectory_manifests.md`](docs/phase1_trajectory_manifests.md).
+`t_p`, the known start state `x_0`, the transitions permitted between routes,
+and the RNP-style containment tube; builds the offline per-window landmark
+manifests from those; and provides the visualization tools for reviewing all of
+it. See [`docs/phase1_trajectory_manifests.md`](docs/phase1_trajectory_manifests.md).
 
 The pilot trajectory set and its CONOPS parameters live in
 [`configs/scenarios/san_jose_downtown.yaml`](configs/scenarios/san_jose_downtown.yaml).
 The tube radius is a config value with no default anywhere in code - it is
 swept across experiments (`--tube-radius`, or `ConopsConfig.with_tube_radius`).
+
+### Transitions are generated, not authored
+
+A transition between two routes is **not known before flight**: it may begin
+anywhere along the route being flown, at any arc length, not just at a
+waypoint. So the scenario file declares only which hand-offs are *permitted* -
+a `TransitionRule` - and the geometry is generated:
+
+- **Initiation** is any arc-length position on the source route. A rule can
+  narrow that window (`initiate_from_m` / `initiate_to_m`) for a target that
+  only becomes valid past some point.
+- **Arrival** is the first target waypoint ahead of where the initiation point
+  projects onto the target's ground track, which is what guarantees the
+  transition makes forward progress rather than doubling back.
+- **Geometry** is a cubic Hermite spline matching the source's heading at the
+  initiation point and the target's at the arrival waypoint. This is a
+  placeholder for a real dynamics model - smooth and heading-continuous, but
+  ignorant of turn rate, bank limits, and airspeed.
+- **The family is the object**, not any one path: initiation is continuous, so
+  the aircraft may be anywhere in the region the family sweeps while a hand-off
+  is under way. That region is what the maps shade.
+
+A return to `x_0` is an ordinary candidate route whose last waypoint is `x_0`,
+one per outbound route, reached by the same machinery. Composite routes then
+need no declaration at all - "fly `t_p`, divert to `t_alt_north`, then take the
+northern return" is a path through the transition graph, and
+`TrajectorySet.route_paths()` enumerates them.
 
 ### Visualizing the trajectory set
 
@@ -175,31 +202,58 @@ python scripts/visualize_trajectories.py \
     --output-dir out/viz
 ```
 
-Writes, into `--output-dir`:
+Writes, into `--output-dir` - all of it self-contained, interactive HTML:
 
 | File | What it shows |
 | --- | --- |
-| `trajectory_graph.png` | The graph of `T`: candidates as nodes, transition corridors as edges, `x_0` as the entry node - plus one arc-length profile per candidate showing height above ground, the tube radius, the tube+FOV outer radius, and the manifest window boundaries. |
-| `trajectory_set.html` | Interactive map of every trajectory with its own tube corridor and visible footprint, over San Jose imagery. |
-| `trajectory_<id>.html` | One map per trajectory: its tube at the configured radius, the per-window visible footprints, and the imagery tiles those footprints cover. |
+| `trajectory_graph.html` | The **structural** view: `T` as a transition graph (routes as nodes, permitted hand-offs as edges, `x_0` as the entry), the routes those rules permit, and one arc-length profile per route showing height above ground, the tube radius, the camera's ground reach, and the manifest window boundaries. Node positions are graph layers, deliberately not geography - that is the map's job. |
+| `trajectory_set.html` | The spatial view: every route with its tube and visible footprint, and every transition family with the region it can reach, over San Jose imagery. |
+| `trajectory_<id>.html` | One map per route: its tube at the configured radius, the per-window visible footprints, and the imagery tiles those footprints cover. |
+| `transition_<source>__<target>.html` | One map per transition rule: every sampled hand-off, where each initiates on the source, the waypoint it rejoins at, and the region the family sweeps. |
 
 #### Options
 
 | Flag | Required | Default | Description |
 | --- | --- | --- | --- |
-| `--scenario PATH` | yes | - | Scenario YAML defining `T`, `t_p`, `x_0`, and the CONOPS parameters. |
-| `--output-dir PATH` | yes | - | Directory to write the figure and maps into; created if missing. |
+| `--scenario PATH` | yes | - | Scenario YAML defining `T`, `t_p`, `x_0`, the transition rules, and the CONOPS parameters. |
+| `--output-dir PATH` | yes | - | Directory to write the report and maps into; created if missing. |
 | `--tube-radius M` | no | the scenario's `conops.tube_radius_m` | Override the tube radius, in meters - the sweep entry point. |
 | `--tile-level N` | no | the scenario's `conops.tile_level` | Imagery cache level for the "tiles in view" layer. |
-| `--no-tiles` | no | off | Skip the imagery-tile layer on the per-trajectory maps. |
+| `--transition-samples N` | no | the scenario's `conops.transition.samples` | Initiation points sampled per transition rule. A fidelity knob on how finely the continuous family is stood in for - denser to inspect, sparser to draw. |
+| `--no-tiles` | no | off | Skip the imagery-tile layer on the per-route maps. |
+| `--no-transitions` | no | off | Skip the transition-family layers and the per-rule maps. |
 | `--no-imagery` | no | off | Omit the San Jose DPW imagery basemap layer, for maps reviewed without network access. |
-| `--dpi N` | no | 140 | Raster DPI for the PNG figure. |
 | `-v`, `--verbose` | no | off | DEBUG-level logging. |
 
-The maps are self-contained HTML - open them in a browser. Every element is a
-toggleable layer, and hovering a corridor, window footprint, or tile shows the
-numbers behind it (window id, arc-length span, max AGL, FOV ground radius,
-tile `level/row/col`).
+Every element on the maps is a toggleable layer, and hovering a corridor,
+transition path, window footprint, or tile shows the numbers behind it (window
+id, arc-length span, max AGL, camera ground reach, initiation arc length,
+arrival waypoint, turn angles, tile `level/row/col`).
+
+### What the CONOPS parameters mean
+
+`conops.window_length_m` is the target arc length of one **manifest window**. A
+trajectory is chopped into windows along its arc length and §3.3 builds one
+precomputed landmark manifest per window, so this trades manifest count against
+how much ground each manifest covers: halve it and you get twice as many
+manifests, each with a tighter footprint and a shorter candidate-road list for
+the runtime lookup to sift. It is a target rather than an exact stride - a
+trajectory is divided into `round(length / window_length_m)` *equal* windows,
+so a 2 km route at a 1200 m window length gives two 1000 m windows rather than
+1200 m plus an 800 m tail, whose manifest would nearly duplicate its
+neighbour's.
+
+`conops.camera` carries the field of view, the **sensor pose** (mounting
+relative to the body frame - all zeros is the nadir camera the first prototype
+flies), and an **attitude margin**: how far off level the aircraft is allowed
+to be when a footprint is sized, with a larger allowance applying near
+waypoints where the turns are. The margin defaults to zero, so the first proof
+of concept sizes footprints as if the aircraft were level; the mechanism is
+there to switch on.
+
+`conops.transition` carries the Hermite `tangent_gain` (how far the curve
+bulges, scaled by the endpoint separation so the shape is scale-free), the
+`max_turn_deg` feasibility screen, and the sampling density.
 
 ### Building the landmark manifests
 
@@ -210,11 +264,11 @@ python scripts/build_manifests.py \
     --map out/viz/manifests.html
 ```
 
-For each window of each trajectory, this grows the tube by the sensor's ground
-field of view, queries CSJ Streets against that envelope, clips the returned
-centerlines to it, derives their intersections, and records the imagery tiles
-the window covers. The result is one pinned JSON bundle - the runtime "possible
-roads" lookup reads it and never re-queries CSJ Streets.
+For each window of each route, this grows the tube by how far the camera can
+see, queries CSJ Streets against that envelope, clips the returned centerlines
+to it, derives their intersections, and records the imagery tiles the window
+covers. The result is one pinned JSON bundle - the runtime "possible roads"
+lookup reads it and never re-queries CSJ Streets.
 
 Pass `--streets-geojson` to build from an archived pull written by
 `scripts/fetch_csj_streets.py` instead of the live layer; prefer that when

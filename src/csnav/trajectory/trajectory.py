@@ -25,6 +25,8 @@ from functools import cached_property
 
 import networkx as nx
 
+from shapely.geometry import LineString, Point as ShapelyPoint
+
 from csnav.data.arcgis.models import Extent
 from csnav.geometry.local_frame import LocalFrame, Point
 from csnav.trajectory.waypoints import TrajectoryRole, Waypoint
@@ -37,6 +39,10 @@ X0_NODE = "x0"
 
 class TrajectoryError(ValueError):
     """Raised when a trajectory or trajectory set is structurally invalid."""
+
+
+class TransitionError(ValueError):
+    """Raised when a transition rule is malformed or cannot produce a path."""
 
 
 @dataclass(frozen=True)
@@ -206,6 +212,21 @@ class Trajectory:
         """Waypoint at flight-plan ``time`` (seconds), in WGS84."""
         return self.point_at(self.distance_at_time(time))
 
+    def speed_at(self, distance: float) -> float:
+        """Ground speed implied by the flight plan at ``distance`` meters of arc length, in m/s.
+
+        Taken from the leg's own length and scheduled duration, so it follows
+        whatever the plan says rather than assuming a constant cruise. Returns
+        0.0 for a leg with no scheduled duration; callers that need a positive
+        speed (the transition model, for instance) supply their own fallback.
+        """
+        index, _ = self._bracket(distance)
+        duration = self.waypoints[index + 1].time - self.waypoints[index].time
+        if duration <= 0.0:
+            return 0.0
+        leg = self.cumulative_distances[index + 1] - self.cumulative_distances[index]
+        return leg / duration
+
     def sample(self, spacing: float) -> tuple[Waypoint, ...]:
         """Waypoints resampled every ``spacing`` meters of arc length, endpoints included.
 
@@ -270,6 +291,89 @@ class Trajectory:
                 return window
         raise TrajectoryError(f"arc length {distance} m is outside trajectory {self.id!r} (0..{self.length} m)")
 
+    # ----- direction, projection, and waypoint proximity ----------------------
+
+    @cached_property
+    def ground_track_enu(self) -> LineString:
+        """The waypoint polyline projected to 2D in this trajectory's ENU frame, in meters.
+
+        Height is dropped: this is the ground track, which is what lateral
+        containment, cross-track distance, and cross-trajectory projection are
+        all defined against.
+        """
+        return LineString([(point.east, point.north) for point in self.enu_vertices])
+
+    @cached_property
+    def ground_cumulative_distances(self) -> tuple[float, ...]:
+        """Horizontal arc length (meters) at each waypoint - the 2D counterpart of :attr:`cumulative_distances`."""
+        distances = [0.0]
+        for previous, current in zip(self.enu_vertices, self.enu_vertices[1:]):
+            distances.append(
+                distances[-1]
+                + math.dist((previous.east, previous.north), (current.east, current.north))
+            )
+        return tuple(distances)
+
+    def project(self, lat: float, lon: float) -> float:
+        """Arc length (meters) of the point on this trajectory's ground track nearest ``(lat, lon)``.
+
+        The input is WGS84 degrees; the answer is in this trajectory's own
+        arc-length parameterization, i.e. directly comparable with
+        :meth:`point_at` and :meth:`windows`. Used to decide where an aircraft
+        currently on one trajectory would rejoin another - the arrival rule for
+        a transition (see :mod:`csnav.trajectory.transition`).
+
+        The nearest point is found on the *ground* track (2D), then mapped back
+        to the 3D arc length, so a climbing leg's arc length is not distorted by
+        the projection being horizontal.
+        """
+        position = self.local_frame.to_enu(lat, lon)
+        ground_distance = self.ground_track_enu.project(ShapelyPoint(position.east, position.north))
+        return self._ground_to_arc_length(ground_distance)
+
+    def _ground_to_arc_length(self, ground_distance: float) -> float:
+        """Map a horizontal arc length (meters) to this trajectory's 3D arc length."""
+        ground = self.ground_cumulative_distances
+        clamped = min(max(ground_distance, 0.0), ground[-1])
+        for index in range(len(ground) - 1):
+            start, end = ground[index], ground[index + 1]
+            if clamped <= end:
+                span = end - start
+                fraction = 0.0 if span == 0.0 else (clamped - start) / span
+                return _interpolate(
+                    self.cumulative_distances[index], self.cumulative_distances[index + 1], fraction
+                )
+        return self.length
+
+    def tangent_at(self, distance: float) -> tuple[float, float, float]:
+        """Unit direction of travel at ``distance`` meters of arc length, in local ENU.
+
+        Returns ``(east, north, up)`` components of a unit vector in this
+        trajectory's own frame. At a waypoint the *outgoing* leg's direction is
+        returned, so the tangent is well defined at a corner.
+        """
+        index, _ = self._bracket(distance)
+        start, end = self.enu_vertices[index], self.enu_vertices[index + 1]
+        vector = (end.east - start.east, end.north - start.north, end.up - start.up)
+        norm = math.dist((0.0, 0.0, 0.0), vector)
+        if norm == 0.0:
+            return (1.0, 0.0, 0.0)
+        return (vector[0] / norm, vector[1] / norm, vector[2] / norm)
+
+    def heading_at(self, distance: float) -> float:
+        """Ground-track heading at ``distance`` meters of arc length, in degrees clockwise from north."""
+        east, north, _ = self.tangent_at(distance)
+        return math.degrees(math.atan2(east, north)) % 360.0
+
+    def distance_to_nearest_waypoint(self, distance: float) -> float:
+        """Arc-length distance, in meters, from ``distance`` to the nearest waypoint.
+
+        Feeds the attitude margin: excursions are largest around waypoints,
+        where the turns are (see
+        :class:`csnav.geometry.camera.AttitudeMargin`).
+        """
+        return min(abs(distance - waypoint) for waypoint in self.cumulative_distances)
+
     # ----- interop ------------------------------------------------------------
 
     @property
@@ -296,18 +400,57 @@ class Trajectory:
 
 
 @dataclass(frozen=True)
-class Transition:
-    """A directed transition between two candidate trajectories (or back to ``x_0``).
+class TransitionRule:
+    """A permitted hand-off from one trajectory to another - the edge of the trajectory graph.
 
-    ``source``/``target`` are trajectory ids or :data:`X0_NODE`. ``via`` names
-    the :class:`TrajectoryRole.TRANSITION` trajectory that gives the corridor
-    its geometry, or is ``None`` for a direct hand-off with no distinct
-    corridor path of its own.
+    ``source`` and ``target`` are trajectory ids (or
+    :data:`X0_NODE` for the initial entry into a
+    route, which has no generated geometry - the aircraft simply starts there).
+
+    ``initiate_from``/``initiate_to`` bound where along the source a transition
+    may begin, in meters of arc length; ``None`` means the source's full extent.
+    Narrow them for a target that only becomes reachable past some point -
+    a near-orthogonal alternate valid only after a given waypoint, say.
+
+    ``max_turn_deg`` and ``tangent_gain`` override the
+    :class:`csnav.trajectory.transition.TransitionModel`'s defaults for this edge alone.
     """
 
     source: str
     target: str
-    via: str | None = None
+    initiate_from: float | None = None
+    initiate_to: float | None = None
+    max_turn_deg: float | None = None
+    tangent_gain: float | None = None
+    label: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.source == self.target:
+            raise TransitionError(f"transition {self.source!r} -> {self.target!r} is a self-loop")
+        if (
+            self.initiate_from is not None
+            and self.initiate_to is not None
+            and self.initiate_to < self.initiate_from
+        ):
+            raise TransitionError(
+                f"transition {self.source!r} -> {self.target!r} has initiate_to "
+                f"({self.initiate_to}) before initiate_from ({self.initiate_from})"
+            )
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.source, self.target
+
+    def domain(self, source: Trajectory) -> tuple[float, float]:
+        """Arc-length window on ``source`` where this transition may initiate, in meters."""
+        start = 0.0 if self.initiate_from is None else max(0.0, self.initiate_from)
+        end = source.length if self.initiate_to is None else min(source.length, self.initiate_to)
+        if end < start:
+            raise TransitionError(
+                f"transition {self.source!r} -> {self.target!r} has an empty initiation domain on a "
+                f"{source.length:.0f} m trajectory"
+            )
+        return start, end
 
 
 @dataclass(frozen=True)
@@ -315,17 +458,30 @@ class TrajectorySet:
     """``T`` - the candidate trajectory set, its primary ``t_p``, and the start state ``x_0``.
 
     Because ``T`` is known before flight, this is what makes the offline
-    manifest precomputation of integration plan §3.3 possible at all. The set
-    also carries the transition corridors between candidates, so the reachable
-    state space it bounds includes trajectory changes and the return path to
-    ``x_0``, not just the primary route.
+    manifest precomputation of integration plan §3.3 possible at all.
+
+    Transitions between candidates are **rules, not routes**: a
+    :class:`TransitionRule` says a hand-off is permitted and bounds where it may
+    begin, and the geometry is generated on demand by
+    :class:`csnav.trajectory.transition.TransitionModel`. A transition is not
+    known before flight - only that one could start anywhere along the route
+    being flown - so authored corridor geometry would be claiming knowledge the
+    flight plan does not have. ``trajectories`` therefore holds only candidate
+    routes; a generated transition carries
+    :attr:`~csnav.trajectory.waypoints.TrajectoryRole.TRANSITION` and lives in a
+    :class:`~csnav.trajectory.transition.TransitionFamily`.
+
+    Because the rules form a graph, a *route* through the flight - "fly ``t_p``,
+    divert to ``t_alt_north``, then take the northern return" - is a path
+    through it, and :meth:`route_paths` enumerates them. Composite routes like
+    that need no separate declaration.
     """
 
     id: str
     trajectories: tuple[Trajectory, ...]
     primary_id: str
     x0: Waypoint
-    transitions: tuple[Transition, ...] = ()
+    transitions: tuple[TransitionRule, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.trajectories:
@@ -336,13 +492,25 @@ class TrajectorySet:
             raise TrajectoryError(f"duplicate trajectory ids in {self.id!r}: {sorted(duplicates)}")
         if self.primary_id not in ids:
             raise TrajectoryError(f"primary trajectory {self.primary_id!r} is not in {sorted(ids)}")
+
+        authored = [t.id for t in self.trajectories if t.role is TrajectoryRole.TRANSITION]
+        if authored:
+            raise TrajectoryError(
+                f"trajectory set {self.id!r} contains authored transition trajectories {sorted(authored)}; "
+                "transitions are not known before flight - declare a TransitionRule instead and let "
+                "TransitionModel generate the family"
+            )
+
         known = set(ids) | {X0_NODE}
-        for transition in self.transitions:
-            for endpoint in (transition.source, transition.target):
+        for rule in self.transitions:
+            for endpoint in (rule.source, rule.target):
                 if endpoint not in known:
                     raise TrajectoryError(f"transition endpoint {endpoint!r} is not a known trajectory or {X0_NODE!r}")
-            if transition.via is not None and transition.via not in ids:
-                raise TrajectoryError(f"transition corridor {transition.via!r} is not a known trajectory")
+            if rule.target == X0_NODE:
+                raise TrajectoryError(
+                    f"transition {rule.source!r} -> {X0_NODE!r} has no target route; model a return as its own "
+                    "candidate trajectory ending at x_0 and transition into that"
+                )
 
     def by_id(self, trajectory_id: str) -> Trajectory:
         """Look up one trajectory by id."""
@@ -358,21 +526,32 @@ class TrajectorySet:
 
     @property
     def candidates(self) -> tuple[Trajectory, ...]:
-        """The candidate trajectories in ``T`` (everything that isn't a transition corridor)."""
-        return tuple(t for t in self.trajectories if t.role is not TrajectoryRole.TRANSITION)
+        """The candidate trajectories in ``T``. Every member is a candidate; see the class docstring."""
+        return self.trajectories
 
-    @property
-    def corridors(self) -> tuple[Trajectory, ...]:
-        """The transition-corridor paths between candidates."""
-        return tuple(t for t in self.trajectories if t.role is TrajectoryRole.TRANSITION)
+    def rules_from(self, trajectory_id: str) -> tuple[TransitionRule, ...]:
+        """Transition rules whose source is ``trajectory_id`` (or :data:`X0_NODE`)."""
+        return tuple(rule for rule in self.transitions if rule.source == trajectory_id)
+
+    def entry_ids(self) -> tuple[str, ...]:
+        """Trajectories that may be flown straight from ``x_0``.
+
+        The targets of rules sourced at :data:`X0_NODE`; if no rule mentions
+        ``x_0`` at all, every candidate is treated as an entry, since the set
+        would otherwise have no way in.
+        """
+        entries = tuple(rule.target for rule in self.transitions if rule.source == X0_NODE)
+        return entries or tuple(trajectory.id for trajectory in self.trajectories)
 
     def to_networkx(self) -> nx.DiGraph:
-        """The trajectory set as a directed graph: candidates as nodes, transitions as edges.
+        """The trajectory set as a directed graph: candidates as nodes, transition rules as edges.
 
         Nodes are candidate-trajectory ids plus :data:`X0_NODE` for the known
         start state, each carrying ``role``, ``length_m``, ``duration_s`` and
-        the trajectory object itself. Edges carry ``via`` (the corridor
-        trajectory id, if any) and its ``length_m``.
+        the trajectory object. Edges carry the :class:`TransitionRule` itself
+        and its declared initiation window, not any generated geometry -
+        geometry belongs to a :class:`~csnav.trajectory.transition.TransitionFamily`,
+        which depends on the transition model in force.
 
         ``networkx.DiGraph`` per CLAUDE.md's graph convention - the same type
         the slice DAG spec uses in Phase 3, so no translation layer is needed.
@@ -386,7 +565,7 @@ class TrajectorySet:
             height=self.x0.height,
             time=self.x0.time,
         )
-        for trajectory in self.candidates:
+        for trajectory in self.trajectories:
             graph.add_node(
                 trajectory.id,
                 role=trajectory.role.value,
@@ -394,16 +573,49 @@ class TrajectorySet:
                 duration_s=trajectory.duration,
                 trajectory=trajectory,
             )
-        for transition in self.transitions:
-            corridor = self.by_id(transition.via) if transition.via else None
+        for rule in self.transitions:
+            source = None if rule.source == X0_NODE else self.by_id(rule.source)
+            start, end = rule.domain(source) if source is not None else (0.0, 0.0)
             graph.add_edge(
-                transition.source,
-                transition.target,
-                via=transition.via,
-                length_m=corridor.length if corridor else 0.0,
-                corridor=corridor,
+                rule.source,
+                rule.target,
+                rule=rule,
+                initiate_from_m=start,
+                initiate_to_m=end,
+                is_entry=rule.source == X0_NODE,
             )
         return graph
+
+    def terminal_ids(self) -> tuple[str, ...]:
+        """Trajectories with no onward transition - where a flight ends."""
+        graph = self.to_networkx()
+        return tuple(
+            node
+            for node in graph.nodes
+            if node != X0_NODE and graph.out_degree(node) == 0
+        )
+
+    def route_paths(self) -> tuple[tuple[str, ...], ...]:
+        """Every simple route through the set, as tuples of trajectory ids from ``x_0`` onward.
+
+        A route is a path in the transition graph: ``t_p`` flown to its end is
+        one, ``t_p -> t_alt_north -> the northern return`` is another. These
+        compositions are what the set actually permits, and none of them has to
+        be declared separately - they fall out of the rules. Note that each is a
+        *family* of real flights, since where each hand-off begins is continuous
+        (see :mod:`csnav.trajectory.transition`).
+        """
+        graph = self.to_networkx()
+        routes: list[tuple[str, ...]] = []
+        terminals = set(self.terminal_ids())
+        for entry in self.entry_ids():
+            if entry not in graph:
+                continue
+            reachable_terminals = terminals or {entry}
+            for terminal in sorted(reachable_terminals):
+                for path in nx.all_simple_paths(graph, entry, terminal) if entry != terminal else [[entry]]:
+                    routes.append(tuple(path))
+        return tuple(sorted(set(routes)))
 
     @property
     def bounds(self) -> Extent:
