@@ -54,7 +54,7 @@ On first build, `.devcontainer/post-create.sh` installs the project
 ### Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Fetching historic imagery for an area of interest
@@ -209,7 +209,7 @@ northern return" is a path through the transition graph, and
 ### Visualizing the trajectory set
 
 ```bash
-pip install -e ".[dev,viz]"
+uv sync --extra dev --extra viz
 
 python scripts/visualize_trajectories.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \

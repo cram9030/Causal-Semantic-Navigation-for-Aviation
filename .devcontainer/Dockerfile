@@ -49,7 +49,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 # Isolated venv (owned by the non-root user) rather than the system
 # site-packages, so `postCreateCommand` can install into it without sudo.
+# `uv sync` ignores a bare $VIRTUAL_ENV and defaults to creating its own
+# `.venv` under the project directory - UV_PROJECT_ENVIRONMENT is what
+# actually points it at this venv instead of a second, shadow one.
 ENV VIRTUAL_ENV=/opt/venv
+ENV UV_PROJECT_ENVIRONMENT=${VIRTUAL_ENV}
 RUN python3 -m venv ${VIRTUAL_ENV} && chown -R ${USERNAME}:${USERNAME} ${VIRTUAL_ENV}
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 

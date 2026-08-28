@@ -57,6 +57,6 @@ tree.
 ## Running the tests
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/geometry/test_local_frame.py
+uv sync --extra dev
+uv run pytest tests/geometry/test_local_frame.py
 ```

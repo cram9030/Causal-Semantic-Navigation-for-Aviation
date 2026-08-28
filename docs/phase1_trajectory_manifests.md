@@ -374,7 +374,7 @@ a whole route at the finest level is not something to materialize by accident.
 ## Running it
 
 ```bash
-pip install -e ".[dev,viz]"
+uv sync --extra dev --extra viz
 ```
 
 The visualization extra is Plotly and folium; both emit self-contained HTML
