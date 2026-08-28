@@ -142,10 +142,9 @@ python scripts/fetch_lidar_elevation.py \
     --output data/raw/lidar/downtown_dem.tif
 ```
 
-Pass `--identify LON LAT` instead of `--bbox`/`--output` to print a single
-point's elevation - confirmed working against the live service (e.g.
-`--identify -121.9 37.3` returns `41.5276`). `--bbox`/`read_window` uses a
-different, correctly-documented parameter pair (`bboxSR`/`imageSR`) than
-`identify` does, so it's very likely fine too, but hasn't independently been
-exercised against the live service the way `identify` has - see
-[`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md).
+Both paths are confirmed working against the live service: `--identify -121.9
+37.3` returns `41.5276`, and the `--bbox` example above writes a real
+512x512 GeoTIFF. Pass `--identify LON LAT` instead of `--bbox`/`--output` to
+print a single point's elevation rather than fetching a raster. See
+[`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
+the full story of how this data source was chosen.

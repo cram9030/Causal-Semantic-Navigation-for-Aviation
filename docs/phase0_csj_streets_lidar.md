@@ -128,12 +128,11 @@ directly in the `geometry` JSON object (the standard ArcGIS REST
 convention) instead of relying on a separate `sr` param, which the service
 does honor.
 
-`read_window()`/`--bbox` uses `bboxSR`/`imageSR` for `exportImage`, a
+`read_window()`/`--bbox` uses `bboxSR`/`imageSR` for `exportImage` - a
 different (correctly-documented, unambiguous) parameter pair than
-`identify`'s bare `sr` - very likely unaffected by the same bug, but not
-yet independently confirmed against the live service the way `identify` is.
-Run `python scripts/fetch_lidar_elevation.py --bbox ... --output ...` and
-inspect the result before relying on it for anything downstream.
+`identify`'s bare `sr` - and is confirmed working too: `--bbox -121.95
+37.30 -121.85 37.36 --output ...` wrote a real 512x512 GeoTIFF against the
+live service.
 
 ## Module layout
 
