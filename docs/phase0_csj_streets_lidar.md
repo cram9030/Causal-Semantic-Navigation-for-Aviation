@@ -26,6 +26,22 @@ returns the REST URL of the first layer whose *name* (not the service's)
 matches. This keeps `CSJStreetsClient` from hardcoding a service name that
 has already changed once and could again - only the substrings passed to
 `find_layer` need updating if San Jose reorganizes its catalog.
+`fetch_csj_streets.py` defaults `--root` to `OPN` (where `Streets` lives at
+the time of writing) rather than the whole services directory, both to keep
+discovery fast and because the wider directory contains folders (e.g.
+`Internal`) that 403/404 when actually listed despite being advertised in
+the parent folder's JSON; pass `--root ''` to search everything if San
+Jose's layout has moved `Streets` elsewhere.
+
+`ArcGISCatalog.walk()` tolerates that kind of folder on its own too - a
+folder that 403/404s when listed is logged and skipped rather than aborting
+the whole walk, since one bad or restricted folder shouldn't hide every
+service elsewhere in the tree (this matters most when searching a wide or
+whole-catalog root, e.g. for `--root ''` above or LIDAR elevation discovery
+below). An ArcGIS *error payload* (a 200 response with an `error` body, as
+opposed to a plain HTTP error) still propagates - that typically means
+something is wrong with the request itself, not just "this folder isn't
+here".
 
 The LIDAR elevation product, by contrast, is published as its own
 `ImageServer`, so it only needs the existing service-level discovery

@@ -10,6 +10,7 @@ service rather than assuming a single well-known name.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterator
 
@@ -20,6 +21,8 @@ from .models import ServiceRef
 DEFAULT_BASE_URL = "https://geo.sanjoseca.gov/server/rest/services"
 
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
+
+logger = logging.getLogger(__name__)
 
 
 class ArcGISCatalogError(RuntimeError):
@@ -88,7 +91,17 @@ class ArcGISCatalog:
         return sub_folders, services
 
     def walk(self, root: str = "") -> Iterator[ServiceRef]:
-        """Recursively yield every service reachable under ``root``."""
+        """Recursively yield every service reachable under ``root``.
+
+        A folder that fails to list with a plain HTTP 403/404 - some ArcGIS
+        servers advertise folders in the directory JSON that turn out to be
+        access-restricted or stale when actually requested - is logged and
+        skipped rather than aborting the whole walk, since one bad folder
+        shouldn't hide every service elsewhere in the tree. An ArcGIS error
+        *payload* (a 200 response with an ``error`` body) still propagates,
+        since that typically signals a real problem with the request itself
+        rather than "this folder doesn't exist here".
+        """
         pending = [root]
         visited: set[str] = set()
         while pending:
@@ -96,7 +109,14 @@ class ArcGISCatalog:
             if folder in visited:
                 continue
             visited.add(folder)
-            sub_folders, services = self.list_folder(folder)
+            try:
+                sub_folders, services = self.list_folder(folder)
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in (403, 404):
+                    logger.warning("skipping catalog folder %r: HTTP %s", folder, status)
+                    continue
+                raise
             yield from services
             pending.extend(sub_folders)
 
@@ -167,7 +187,14 @@ class ArcGISCatalog:
         candidates = self.discover_services(root=root, name_contains=service_name_contains, service_types=service_types)
         for ref in candidates:
             service_url = self.service_rest_url(ref)
-            data = self._get_json_at(service_url)
+            try:
+                data = self._get_json_at(service_url)
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in (403, 404):
+                    logger.warning("skipping service %r: HTTP %s", service_url, status)
+                    continue
+                raise
             for layer in data.get("layers") or []:
                 if needle in str(layer.get("name", "")).lower():
                     return f"{service_url}/{layer['id']}"

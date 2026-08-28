@@ -37,6 +37,7 @@ from csnav.data.arcgis.streets import CSJStreetsClient  # noqa: E402
 
 logger = logging.getLogger("fetch_csj_streets")
 
+DEFAULT_ROOT = "OPN"
 DEFAULT_SERVICE_NAME_CONTAINS = "OpenDataService"
 DEFAULT_LAYER_NAME_CONTAINS = "Streets"
 
@@ -66,8 +67,12 @@ def main() -> None:
         help="substring used to find the Streets layer within a matching service",
     )
     parser.add_argument(
-        "--root", default="",
-        help="catalog folder to search under (default: the whole services directory)",
+        "--root", default=DEFAULT_ROOT,
+        help=(
+            f"catalog folder to search under (default: {DEFAULT_ROOT!r}, where the Streets "
+            "layer lives at the time of writing; pass '' to search the whole services "
+            "directory if that's changed)"
+        ),
     )
     parser.add_argument(
         "--layer-url", default=None,
