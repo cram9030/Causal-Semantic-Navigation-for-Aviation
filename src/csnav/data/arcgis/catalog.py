@@ -10,6 +10,7 @@ service rather than assuming a single well-known name.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterator
 
@@ -20,6 +21,8 @@ from .models import ServiceRef
 DEFAULT_BASE_URL = "https://geo.sanjoseca.gov/server/rest/services"
 
 _YEAR_RE = re.compile(r"(19|20)\d{2}")
+
+logger = logging.getLogger(__name__)
 
 
 class ArcGISCatalogError(RuntimeError):
@@ -55,6 +58,10 @@ class ArcGISCatalog:
 
     def _get_json(self, folder: str) -> dict:
         url = f"{self.base_url}/{folder}".rstrip("/") if folder else self.base_url
+        return self._get_json_at(url)
+
+    def _get_json_at(self, url: str) -> dict:
+        """Same as :meth:`_get_json`, for a caller-supplied absolute REST URL."""
         resp = self.session.get(url, params={"f": "json"}, timeout=self.timeout)
         resp.raise_for_status()
         try:
@@ -84,7 +91,17 @@ class ArcGISCatalog:
         return sub_folders, services
 
     def walk(self, root: str = "") -> Iterator[ServiceRef]:
-        """Recursively yield every service reachable under ``root``."""
+        """Recursively yield every service reachable under ``root``.
+
+        A folder that fails to list with a plain HTTP 403/404 - some ArcGIS
+        servers advertise folders in the directory JSON that turn out to be
+        access-restricted or stale when actually requested - is logged and
+        skipped rather than aborting the whole walk, since one bad folder
+        shouldn't hide every service elsewhere in the tree. An ArcGIS error
+        *payload* (a 200 response with an ``error`` body) still propagates,
+        since that typically signals a real problem with the request itself
+        rather than "this folder doesn't exist here".
+        """
         pending = [root]
         visited: set[str] = set()
         while pending:
@@ -92,9 +109,36 @@ class ArcGISCatalog:
             if folder in visited:
                 continue
             visited.add(folder)
-            sub_folders, services = self.list_folder(folder)
+            try:
+                sub_folders, services = self.list_folder(folder)
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in (403, 404):
+                    logger.warning("skipping catalog folder %r: HTTP %s", folder, status)
+                    continue
+                raise
             yield from services
             pending.extend(sub_folders)
+
+    def discover_services(
+        self,
+        root: str = "",
+        name_contains: str = "",
+        service_types: tuple[str, ...] = ("MapServer", "FeatureServer", "ImageServer"),
+    ) -> list[ServiceRef]:
+        """Find every service under ``root`` whose name contains ``name_contains``.
+
+        This is the generic building block behind :meth:`discover_imagery_services`
+        and, elsewhere, ``CSJStreetsClient``/``LidarElevationClient`` discovery -
+        it never assumes a single well-known service name, since San Jose
+        reorganizes/renames services independently of this codebase.
+        """
+        needle = name_contains.lower()
+        return [
+            ref
+            for ref in self.walk(root)
+            if ref.service_type in service_types and needle in ref.name.lower()
+        ]
 
     def discover_imagery_services(
         self,
@@ -109,12 +153,7 @@ class ArcGISCatalog:
         services such as ``DPW_Imagery_2012``) so downstream training-data
         collection can pull from the full historic archive.
         """
-        needle = name_contains.lower()
-        matches = [
-            ref
-            for ref in self.walk(root)
-            if ref.service_type in service_types and needle in ref.name.lower()
-        ]
+        matches = self.discover_services(root=root, name_contains=name_contains, service_types=service_types)
         # Most recent first is a convenient default order, but nothing here
         # discards older vintages - callers get the full list.
         matches.sort(key=lambda ref: (extract_year(ref.name) or -1, ref.name), reverse=True)
@@ -123,3 +162,43 @@ class ArcGISCatalog:
     def service_rest_url(self, ref: ServiceRef) -> str:
         path = f"{ref.folder}/{ref.name}/{ref.service_type}" if ref.folder else f"{ref.name}/{ref.service_type}"
         return f"{self.base_url}/{path}"
+
+    def find_layer(
+        self,
+        layer_name_contains: str,
+        root: str = "",
+        service_name_contains: str = "",
+        service_types: tuple[str, ...] = ("MapServer", "FeatureServer"),
+    ) -> str:
+        """Resolve a single sublayer's REST URL by name, without hardcoding its service.
+
+        Some datasets (e.g. CSJ ``Streets``) are published as one layer inside a
+        shared, generically-named service (``OPN_OpenDataService/MapServer/60``)
+        rather than as their own top-level service - so name-matching at the
+        service level alone (:meth:`discover_services`) isn't enough. This walks
+        every service matching ``service_name_contains`` under ``root``, inspects
+        each one's own layer list, and returns the REST URL of the first layer
+        whose name contains ``layer_name_contains`` (case-insensitive).
+
+        Raises :class:`ArcGISCatalogError` if no matching layer is found in any
+        matching service.
+        """
+        needle = layer_name_contains.lower()
+        candidates = self.discover_services(root=root, name_contains=service_name_contains, service_types=service_types)
+        for ref in candidates:
+            service_url = self.service_rest_url(ref)
+            try:
+                data = self._get_json_at(service_url)
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in (403, 404):
+                    logger.warning("skipping service %r: HTTP %s", service_url, status)
+                    continue
+                raise
+            for layer in data.get("layers") or []:
+                if needle in str(layer.get("name", "")).lower():
+                    return f"{service_url}/{layer['id']}"
+        raise ArcGISCatalogError(
+            f"no layer matching {layer_name_contains!r} found in {len(candidates)} service(s) "
+            f"matching {service_name_contains!r} under root {root!r}"
+        )

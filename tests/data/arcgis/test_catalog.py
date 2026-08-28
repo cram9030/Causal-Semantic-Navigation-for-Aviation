@@ -108,3 +108,111 @@ def test_service_rest_url():
 
     root_ref = ServiceRef(folder="", name="TopLevel", service_type="MapServer")
     assert catalog.service_rest_url(root_ref) == f"{BASE}/TopLevel/MapServer"
+
+
+@responses.activate
+def test_discover_services_filters_by_type_and_name():
+    responses.add(
+        responses.GET,
+        f"{BASE}",
+        json={
+            "folders": [],
+            "services": [
+                {"name": "OPN_OpenDataService", "type": "MapServer"},
+                {"name": "DPW_Elevation2025", "type": "ImageServer"},
+                {"name": "Hosted/CSJWebMapBase", "type": "FeatureServer"},
+            ],
+        },
+    )
+
+    catalog = ArcGISCatalog(base_url=BASE)
+    services = catalog.discover_services(name_contains="Elevation", service_types=("ImageServer",))
+
+    assert [s.name for s in services] == ["DPW_Elevation2025"]
+
+
+@responses.activate
+def test_find_layer_resolves_sublayer_url_from_matching_service():
+    responses.add(
+        responses.GET,
+        f"{BASE}",
+        json={"folders": [], "services": [{"name": "OPN/OPN_OpenDataService", "type": "MapServer"}]},
+    )
+    service_url = f"{BASE}/OPN/OPN_OpenDataService/MapServer"
+    responses.add(
+        responses.GET,
+        service_url,
+        json={"layers": [{"id": 12, "name": "Parcels"}, {"id": 60, "name": "Streets"}]},
+    )
+
+    catalog = ArcGISCatalog(base_url=BASE)
+    layer_url = catalog.find_layer("Streets", service_name_contains="OpenDataService")
+
+    assert layer_url == f"{service_url}/60"
+
+
+@responses.activate
+def test_walk_skips_folder_that_404s_without_aborting():
+    responses.add(
+        responses.GET,
+        f"{BASE}",
+        json={
+            "folders": ["Internal", "Imagery"],
+            "services": [],
+        },
+    )
+    responses.add(responses.GET, f"{BASE}/Internal", status=404)
+    responses.add(
+        responses.GET,
+        f"{BASE}/Imagery",
+        json={"folders": [], "services": [{"name": "Imagery/DPW_ImageryCached", "type": "MapServer"}]},
+    )
+
+    catalog = ArcGISCatalog(base_url=BASE)
+    services = list(catalog.walk())
+
+    assert [s.name for s in services] == ["DPW_ImageryCached"]
+
+
+@responses.activate
+def test_find_layer_skips_service_that_404s_and_checks_the_next_one():
+    responses.add(
+        responses.GET,
+        f"{BASE}",
+        json={
+            "folders": [],
+            "services": [
+                {"name": "OPN/Broken", "type": "MapServer"},
+                {"name": "OPN/OPN_OpenDataService", "type": "MapServer"},
+            ],
+        },
+    )
+    responses.add(responses.GET, f"{BASE}/OPN/Broken/MapServer", status=404)
+    responses.add(
+        responses.GET,
+        f"{BASE}/OPN/OPN_OpenDataService/MapServer",
+        json={"layers": [{"id": 60, "name": "Streets"}]},
+    )
+
+    catalog = ArcGISCatalog(base_url=BASE)
+    layer_url = catalog.find_layer("Streets", service_name_contains="")
+
+    assert layer_url == f"{BASE}/OPN/OPN_OpenDataService/MapServer/60"
+
+
+@responses.activate
+def test_find_layer_raises_when_no_layer_matches():
+    responses.add(
+        responses.GET,
+        f"{BASE}",
+        json={"folders": [], "services": [{"name": "OPN/OPN_OpenDataService", "type": "MapServer"}]},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/OPN/OPN_OpenDataService/MapServer",
+        json={"layers": [{"id": 12, "name": "Parcels"}]},
+    )
+
+    catalog = ArcGISCatalog(base_url=BASE)
+    with pytest.raises(ArcGISCatalogError):
+        catalog.find_layer("Streets", service_name_contains="OpenDataService")

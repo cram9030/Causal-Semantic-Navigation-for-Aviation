@@ -12,9 +12,9 @@
 |---|---|---|---|
 | `DPW_ImageryCached2025` | High-res aerial imagery (~1.9 cm/px at native zoom) | ArcGIS cached tile service (WMTS-compatible), EPSG:3857 native | Ground-truth imagery for Mask2Former training + runtime observation frames |
 | CSJ `Streets` | Road centerlines with width/lane attributes, refreshed weekly | ArcGIS Hub dataset (FeatureServer / GeoJSON export) | Replaces OSMnx as the road-network prior; also the source for buffer widths in label rasterization |
-| San Jose Imagery & Elevation (LIDAR) | Ground elevation / contour data | ArcGIS Hub, imagery & elevation category | Altitude correction — converts GPS-derived height to AGL, and supports FOV occlusion modeling (buildings/terrain blocking a road from view at low altitude) |
+| USGS 3DEP `3DEPElevation` | Ground elevation (national seamless DEM mosaic) | Live ArcGIS ImageServer, `elevation.nationalmap.gov` — **not** San Jose's own data; San Jose's "Imagery & Elevation" LIDAR product (Valley Water) turned out to be contour lines, not a raster DEM, on inspection of a real download — see `docs/phase0_csj_streets_lidar.md` | Altitude correction — converts GPS-derived height to AGL, and supports FOV occlusion modeling (buildings/terrain blocking a road from view at low altitude) |
 
-**Reprojection note:** the imagery service is EPSG:3857 (Web Mercator), a direct, datum-free projection of WGS84 — reproject at tile-fetch time, no datum transform needed. Streets and elevation layers should be checked individually for their native CRS at export time, but ArcGIS FeatureServer/Hub exports typically support requesting output directly in EPSG:4326.
+**Reprojection note:** the imagery service is EPSG:3857 (Web Mercator), a direct, datum-free projection of WGS84 — reproject at tile-fetch time, no datum transform needed. Streets exports typically support requesting output directly in EPSG:4326 via ArcGIS FeatureServer. The USGS 3DEP ImageServer also reprojects server-side (`bboxSR`/`imageSR`/`sr` = 4326), so no client-side warp is needed for elevation either.
 
 ---
 
@@ -134,6 +134,10 @@ These manifests are consumed both by the ground-truth builder (to scope which im
 
 ## 6. Repo/module structure (updated)
 
+The layout below is aspirational for everything past Phase 0; the
+`data/acquisition` role is implemented today as `src/csnav/data/arcgis/`
+(see "Implementation note" below for why).
+
 ```
 causal-semantic-nav/
 ├── data/
@@ -160,6 +164,40 @@ causal-semantic-nav/
     └── compare_metrics.py
 ```
 
+**Implementation note (Phase 0):** the imagery and CSJ Streets clients are
+San Jose-specific ArcGIS Server clients that share one set of
+REST-catalog/model/projection utilities, so in `src/csnav/` they live
+together as one installable package rather than split under a separate
+`data/acquisition/` tree. The ground-elevation client sits alongside that
+package rather than inside it: it turned out San Jose's own "Imagery &
+Elevation" LIDAR product (Valley Water) is contour lines, not a raster DEM
+(confirmed against a real download — see `docs/phase0_csj_streets_lidar.md`),
+so ground elevation is instead sourced from USGS 3DEP's national elevation
+ImageServer — a different provider entirely, with nothing to discover (a
+fixed, documented federal endpoint) and no `geo.sanjoseca.gov` catalog to
+share:
+
+```
+src/csnav/data/
+├── arcgis/
+│   ├── models.py        # ServiceRef, TileInfo, LevelOfDetail, Extent, ServiceMetadata
+│   ├── projections.py   # EPSG:4326 <-> EPSG:3857 helpers (pyproj)
+│   ├── catalog.py       # ArcGISCatalog: recursive service discovery (+ find_layer() for
+│   │                     # datasets published as a sublayer of a shared, generically-named
+│   │                     # service, e.g. CSJ Streets) - no hardcoded service names
+│   ├── tiles.py         # ArcGIS tileInfo-based tile bounds / row-col-for-extent math
+│   ├── client.py         # ArcGISTileClient: imagery via WMTS / /tile / /export
+│   ├── reproject.py       # warp fetched imagery tiles from EPSG:3857 to EPSG:4326 (rasterio)
+│   └── streets.py          # CSJStreetsClient: paginated /query against the Streets layer, GeoJSON in EPSG:4326
+└── lidar.py                  # LidarElevationClient: live queries against USGS 3DEP's ImageServer
+                                # (read_window/identify), EPSG:4326 - no local cache, no discovery
+```
+
+See `docs/phase0_arcgis_tile_client.md` and `docs/phase0_csj_streets_lidar.md`
+for the rationale behind this layout, the discovery-over-hardcoding approach
+the ArcGIS clients take, and why the LIDAR client doesn't. `data/ground_truth/`
+and everything below it in the aspirational tree remain unimplemented (Phase 1+).
+
 ---
 
 ## 7. Software architecture — UML class diagram
@@ -171,15 +209,20 @@ orchestrating `SliceBuilder` and `GCMFitter` per slice before handing off to eva
 
 ```mermaid
 classDiagram
-class SanJoseImageryClient {
-  +fetch_tile(z, x, y) Image
-  +to_wgs84(tile) GeoTIFF
+class ArcGISCatalog {
+  +discover_services(name_contains, service_types) List
+  +find_layer(layer_name_contains, service_name_contains) str
+}
+class ArcGISTileClient {
+  +fetch_tile(level, row, col) bytes
+  +best_transport() TileTransport
 }
 class CSJStreetsClient {
-  +get_streets(bbox) GeoDataFrame
+  +query(bbox, where) List~StreetSegment~
 }
 class LidarElevationClient {
-  +get_elevation(lat, lon) float
+  +read_window(bbox, width, height) ReprojectedTile
+  +identify(lon, lat) float
 }
 class GroundTruthBuilder {
   +rasterize(streets, tile) PanopticLabel
@@ -263,8 +306,10 @@ ManifestBuilder ..> LocalFrame : uses
 ManifestBuilder ..> TubeModel : uses
 ManifestBuilder --> LandmarkManifest : creates
 GroundTruthBuilder ..> CSJStreetsClient : uses
-GroundTruthBuilder ..> SanJoseImageryClient : uses
+GroundTruthBuilder ..> ArcGISTileClient : uses
 GroundTruthBuilder ..> LocalFrame : uses
+ArcGISCatalog ..> ArcGISTileClient : resolves service URL for
+ArcGISCatalog ..> CSJStreetsClient : resolves layer URL for
 Mask2FormerModel ..> GroundTruthBuilder : trained on
 Mask2FormerModel --> PanopticResult : produces
 Mask2FormerModel --> ConfusionMatrix : produces
