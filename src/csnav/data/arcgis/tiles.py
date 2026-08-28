@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator
 
-from .models import Extent, TileInfo
+from .models import Extent, LevelOfDetail, TileInfo
 
 
 def tile_bounds(tile_info: TileInfo, level: int, row: int, col: int) -> Extent:
@@ -125,3 +125,42 @@ def best_level_for_resolution(tile_info: TileInfo, target_resolution: float) -> 
     if candidates:
         return max(candidates, key=lambda lod: lod.resolution).level
     return min(tile_info.lods, key=lambda lod: lod.resolution).level
+
+
+#: The standard Web Mercator (EPSG:3857) tiling scheme shared by ArcGIS
+#: Online, Google/OSM XYZ tiles, and every ArcGIS cache published against
+#: Esri's "ArcGIS Online / Bing Maps / Google Maps" scheme - which
+#: ``DPW_ImageryCached2025`` is. Level 0 is one 256x256 tile spanning the
+#: world; each level halves the resolution.
+WEB_MERCATOR_ORIGIN = 20037508.342787
+WEB_MERCATOR_LEVEL0_RESOLUTION = 156543.033928
+_ESRI_DPI = 96.0
+_METERS_PER_INCH = 0.0254
+
+
+def web_mercator_tile_info(max_level: int = 23, tile_size: int = 256) -> TileInfo:
+    """The standard EPSG:3857 tiling scheme, levels ``0..max_level``.
+
+    A convenience for callers that need tile-grid math without a live service
+    request - e.g. drawing which imagery tiles a trajectory's field of view
+    covers. When a service's own ``tileInfo`` is available (from
+    :class:`csnav.data.arcgis.client.ArcGISTileClient`), prefer it: this is
+    the *standard* scheme, and a service is free to publish a custom one.
+    """
+    lods = tuple(
+        LevelOfDetail(
+            level=level,
+            resolution=WEB_MERCATOR_LEVEL0_RESOLUTION / (2**level),
+            scale=WEB_MERCATOR_LEVEL0_RESOLUTION / (2**level) * _ESRI_DPI / _METERS_PER_INCH,
+        )
+        for level in range(max_level + 1)
+    )
+    return TileInfo(
+        rows=tile_size,
+        cols=tile_size,
+        image_format="PNG",
+        origin_x=-WEB_MERCATOR_ORIGIN,
+        origin_y=WEB_MERCATOR_ORIGIN,
+        wkid=3857,
+        lods=lods,
+    )
