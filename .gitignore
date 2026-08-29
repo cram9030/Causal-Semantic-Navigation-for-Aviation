@@ -7,6 +7,8 @@ dist/
 .pytest_cache/
 data/raw/
 data/cache/
+data/manifests/
+out/
 *.tif
 *.tiff
 .DS_Store

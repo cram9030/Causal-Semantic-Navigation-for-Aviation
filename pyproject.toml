@@ -15,12 +15,26 @@ dependencies = [
     "pyproj>=3.6",
     "Pillow>=10.0",
     "tqdm>=4.66",
+    # Phase 1 (trajectory/): metric buffering and clipping for the RNP tube and
+    # manifest footprints, the trajectory/slice graph type, and the versioned
+    # scenario config format.
+    "shapely>=2.0",
+    "networkx>=3.0",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "responses>=0.25",
+]
+# Phase 1 (viz/) visualization: interactive Plotly figures of the transition
+# graph and route profiles, and interactive Leaflet maps of tubes, transition
+# families, window footprints, and imagery tiles. Both emit self-contained
+# HTML. Kept optional so the data pipeline installs without a plotting stack.
+viz = [
+    "plotly>=5.20",
+    "folium>=0.15",
 ]
 # Phase 2 (segmentation/) fine-tuning deps: torch/torchvision's Linux wheels
 # on PyPI bundle CUDA support by default, so `pip install torch` picks up the
@@ -43,6 +57,11 @@ dvc = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The window selector's behaviour lives in a real .js file (so it can be linted
+# and unit-tested under node) that gets inlined into every map it is added to.
+[tool.setuptools.package-data]
+"csnav.viz" = ["static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
