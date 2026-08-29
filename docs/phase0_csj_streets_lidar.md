@@ -192,8 +192,8 @@ how this maps onto the originally-sketched module layout.
 ## Running the tests
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/data/arcgis/test_streets.py tests/data/arcgis/test_catalog.py tests/data/test_lidar.py \
+uv sync --extra dev
+uv run pytest tests/data/arcgis/test_streets.py tests/data/arcgis/test_catalog.py tests/data/test_lidar.py \
        tests/scripts/test_fetch_csj_streets.py tests/scripts/test_fetch_lidar_elevation.py
 ```
 

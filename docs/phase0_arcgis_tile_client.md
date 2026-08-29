@@ -87,6 +87,6 @@ deep-zoom coverage doesn't reach that area - rerun with a coarser
 ## Running the tests
 
 ```bash
-pip install -e ".[dev]"
-pytest
+uv sync --extra dev
+uv run pytest
 ```

@@ -11,7 +11,9 @@ ARG USER_GID=${USER_UID}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# python3-venv/pip: application runtime.
+# python3: application runtime. uv (below) creates and manages the venv
+# itself, but python3-venv/python3-pip are kept for the pip-based fallback
+# setup documented in README.md, for contributors who'd rather not adopt uv.
 # gdal-bin/libgdal-dev/proj-bin/libproj-dev: system geometry libraries backing
 # rasterio/pyproj (and future geopandas/shapely use in data/ground_truth and
 # trajectory/ per docs/INTEGRATION_PLAN.md) — the manylinux wheels for these
@@ -43,14 +45,23 @@ RUN groupadd --gid "${USER_GID}" "${USERNAME}" \
     && echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
     && chmod 0440 /etc/sudoers.d/${USERNAME}
 
-# Isolated venv (owned by the non-root user) rather than the system
-# site-packages, so `postCreateCommand` can `pip install` without sudo.
+# uv: single static binary, used in place of pip/venv for dependency
+# resolution and installs — see uv.lock for the pinned, reproducible graph.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# Isolated venv (owned by the non-root user, so `postCreateCommand` can
+# populate it without sudo) rather than the system site-packages. `uv sync`
+# builds the venv itself on first run - it needs no `python -m venv` step,
+# just a directory it's allowed to write into. `uv sync` also ignores a bare
+# $VIRTUAL_ENV and defaults to creating its own `.venv` under the project
+# directory instead; UV_PROJECT_ENVIRONMENT is what points it at this venv
+# instead of a second, shadow one.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv ${VIRTUAL_ENV} && chown -R ${USERNAME}:${USERNAME} ${VIRTUAL_ENV}
+ENV UV_PROJECT_ENVIRONMENT=${VIRTUAL_ENV}
+RUN mkdir -p ${VIRTUAL_ENV} && chown -R ${USERNAME}:${USERNAME} ${VIRTUAL_ENV}
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 USER ${USERNAME}
-RUN pip install --no-cache-dir --upgrade pip
 
 ENV DEBIAN_FRONTEND=dialog
 WORKDIR /workspaces

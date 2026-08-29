@@ -11,9 +11,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # `ml`   - Phase 2 segmentation training deps (torch, torchvision,
 #          transformers, scikit-learn). Installed by default so the GPU
 #          path is ready to use, not something a contributor has to
-#          remember to opt into. All are declared in pyproject.toml so
-#          this stays the single source of truth for versions.
-pip install --no-cache-dir -e ".[dev,viz,ml]"
+#          remember to opt into. All are declared in pyproject.toml, and
+#          pinned (with the rest of the dependency graph) in uv.lock, so
+#          those two files stay the single source of truth for versions.
+# `uv sync` installs into $VIRTUAL_ENV (set in the Dockerfile) and installs
+# the project itself editable by default - equivalent to the old
+# `pip install -e ".[dev,viz,ml]"`, but resolved from the committed lockfile
+# instead of pip re-resolving loose `>=` bounds on every rebuild.
+uv sync --extra dev --extra viz --extra ml
 
 echo "--- GPU check ---"
 python -c "

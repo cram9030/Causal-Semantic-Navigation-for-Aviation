@@ -15,11 +15,25 @@ from `geo.sanjoseca.gov`'s ArcGIS Server:
 
 ### Setup
 
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) — installs
+resolve against the committed `uv.lock`, so every contributor and the dev
+container get the identical, reproducible dependency graph rather than
+whatever pip's resolver picks for a loose `>=` bound that day.
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
+
+This creates `.venv` and installs the project into it editable, matching
+`pip install -e ".[dev]"`. Activate it as usual (`source .venv/bin/activate`)
+or prefix commands with `uv run` (e.g. `uv run pytest`) to skip activation.
+
+Don't have `uv` installed? See the
+[installation docs](https://docs.astral.sh/uv/getting-started/installation/)
+— it's a single static binary, no Python bootstrap required. The project's
+dependency metadata is still standard `pyproject.toml`, so `pip install
+-e ".[dev]"` in a regular venv continues to work if you'd rather not adopt
+uv; you just lose the lockfile's pinned, reproducible versions.
 
 #### Dev container (GPU-ready)
 
@@ -35,18 +49,18 @@ Phase 0/1 work; the container just runs CPU-only in that case.
 Open the repo in VS Code and choose **Dev Containers: Reopen in Container**,
 or run `devcontainer up` from the [Dev Containers CLI](https://github.com/devcontainers/cli).
 On first build, `.devcontainer/post-create.sh` installs the project
-(`pip install -e ".[dev,ml]"`) and prints whether a GPU is visible.
+(`uv sync --extra dev --extra ml`) and prints whether a GPU is visible.
 
 ### Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Fetching historic imagery for an area of interest
 
 ```bash
-python scripts/fetch_historic_imagery.py \
+uv run python scripts/fetch_historic_imagery.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output-dir data/raw/dpw_imagery
 ```
@@ -113,7 +127,7 @@ AOI at a fine `--level` can mean fetching thousands of tiles.
 ### Fetching CSJ Streets for an area of interest
 
 ```bash
-python scripts/fetch_csj_streets.py \
+uv run python scripts/fetch_csj_streets.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output data/raw/csj_streets/downtown.geojson
 ```
@@ -140,7 +154,7 @@ per-request query (no local download/cache, unlike the Valley Water
 approach this replaced).
 
 ```bash
-python scripts/fetch_lidar_elevation.py \
+uv run python scripts/fetch_lidar_elevation.py \
     --bbox -121.95 37.30 -121.85 37.36 \
     --output data/raw/lidar/downtown_dem.tif
 ```
@@ -195,9 +209,9 @@ northern return" is a path through the transition graph, and
 ### Visualizing the trajectory set
 
 ```bash
-pip install -e ".[dev,viz]"
+uv sync --extra dev --extra viz
 
-python scripts/visualize_trajectories.py \
+uv run python scripts/visualize_trajectories.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --output-dir out/viz
 ```
@@ -279,7 +293,7 @@ bulges, scaled by the endpoint separation so the shape is scale-free), the
 ### Building the landmark manifests
 
 ```bash
-python scripts/build_manifests.py \
+uv run python scripts/build_manifests.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --output data/manifests/san_jose_downtown_r250.json \
     --map out/viz/manifests.html

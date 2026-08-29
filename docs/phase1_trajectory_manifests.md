@@ -374,7 +374,7 @@ a whole route at the finest level is not something to materialize by accident.
 ## Running it
 
 ```bash
-pip install -e ".[dev,viz]"
+uv sync --extra dev --extra viz
 ```
 
 The visualization extra is Plotly and folium; both emit self-contained HTML
@@ -384,7 +384,7 @@ you open them, and `--no-imagery` drops that layer too).
 Render the report and maps for the pilot scenario:
 
 ```bash
-python scripts/visualize_trajectories.py \
+uv run python scripts/visualize_trajectories.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --output-dir out/viz
 ```
@@ -392,7 +392,7 @@ python scripts/visualize_trajectories.py \
 Sweep a different tube radius without touching the config:
 
 ```bash
-python scripts/visualize_trajectories.py \
+uv run python scripts/visualize_trajectories.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --tube-radius 500 --output-dir out/viz_r500
 ```
@@ -401,12 +401,12 @@ Build and pin the manifests — from the live CSJ Streets layer, or from an
 archived pull:
 
 ```bash
-python scripts/build_manifests.py \
+uv run python scripts/build_manifests.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --output data/manifests/san_jose_downtown_r250.json \
     --map out/viz/manifests.html
 
-python scripts/build_manifests.py \
+uv run python scripts/build_manifests.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --streets-geojson data/raw/csj_streets/downtown.geojson \
     --elevation \
