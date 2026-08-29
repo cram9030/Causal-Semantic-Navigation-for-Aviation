@@ -218,10 +218,16 @@ For a one-off run without touching the file, use
 `aoi.min_lon=-121.90`, etc.) to sweep a value without a code change.
 
 The `.dvc/config` checked in here points the default remote at a
-**local placeholder directory** (`../csnav-dvc-storage`, a sibling of the
-repo) so a solo checkout works with zero setup. Before this is used by
-more than one machine/collaborator, or at San Jose-imagery scale, swap it
-for real object storage, e.g.:
+**local placeholder directory** (`data/dvc-storage/`, gitignored - not one
+of the DVC-tracked working outputs like `data/raw/` or `data/manifests/`,
+just where the "remote" cache lives locally) so a solo checkout works with
+zero setup. It's kept inside the repo tree rather than a sibling directory
+so it survives a devcontainer rebuild: `.devcontainer/devcontainer.json`
+bind-mounts only the repo folder itself, so anything written outside it
+(e.g. a sibling of the checkout under `/workspaces/`) lives in the
+container's throwaway layer and is silently lost on rebuild. Before this
+is used by more than one machine/collaborator, or at San Jose-imagery
+scale, swap it for real object storage, e.g.:
 
 ```bash
 uv run dvc remote add -d storage s3://<bucket>/csnav-dvc     # or gs://, azure://, etc.
