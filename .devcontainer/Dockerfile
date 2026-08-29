@@ -11,8 +11,9 @@ ARG USER_GID=${USER_UID}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# python3-venv: uv still needs a base interpreter to build a venv against
-# (it doesn't vendor one for the already-installed-Python case).
+# python3: application runtime. uv (below) creates and manages the venv
+# itself, but python3-venv/python3-pip are kept for the pip-based fallback
+# setup documented in README.md, for contributors who'd rather not adopt uv.
 # gdal-bin/libgdal-dev/proj-bin/libproj-dev: system geometry libraries backing
 # rasterio/pyproj (and future geopandas/shapely use in data/ground_truth and
 # trajectory/ per docs/INTEGRATION_PLAN.md) — the manylinux wheels for these
@@ -24,6 +25,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-venv \
+        python3-pip \
         gdal-bin \
         libgdal-dev \
         proj-bin \
@@ -35,18 +37,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# uv (https://astral.sh/uv) replaces pip/venv for this project: dependency
-# resolution is pinned in the committed uv.lock, so `uv sync` installs the
-# exact versions that were resolved and tested rather than whatever's
-# newest on PyPI that day - torch in particular moves fast enough that an
-# unpinned `pip install` could silently jump to a much larger/newer CUDA
-# stack between one rebuild and the next. Installed system-wide (root, via
-# UV_INSTALL_DIR) so both root build steps and the non-root user below can
-# call it without sudo. Version pinned to match what's been verified
-# working; bump deliberately, not implicitly on a rebuild.
-ENV UV_INSTALL_DIR=/usr/local/bin
-RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_VERSION=0.8.17 sh
-
 # Non-root user: required so the container can be run with
 # `claude --dangerously-skip-permissions` for unattended sessions, per
 # https://code.claude.com/docs/en/devcontainer.
@@ -55,15 +45,21 @@ RUN groupadd --gid "${USER_GID}" "${USERNAME}" \
     && echo "${USERNAME} ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/${USERNAME} \
     && chmod 0440 /etc/sudoers.d/${USERNAME}
 
-# Isolated venv (owned by the non-root user) rather than the system
-# site-packages. UV_PROJECT_ENVIRONMENT pins uv's target venv to the same
-# /opt/venv path the previous pip/venv setup used, so
-# devcontainer.json's python.defaultInterpreterPath doesn't need to
-# change; `postCreateCommand`'s `uv sync` (run as the non-root user, once
-# the repo is mounted) populates it from uv.lock.
-ENV UV_PROJECT_ENVIRONMENT=/opt/venv
-RUN mkdir -p ${UV_PROJECT_ENVIRONMENT} && chown -R ${USERNAME}:${USERNAME} ${UV_PROJECT_ENVIRONMENT}
-ENV PATH="${UV_PROJECT_ENVIRONMENT}/bin:${PATH}"
+# uv: single static binary, used in place of pip/venv for dependency
+# resolution and installs — see uv.lock for the pinned, reproducible graph.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# Isolated venv (owned by the non-root user, so `postCreateCommand` can
+# populate it without sudo) rather than the system site-packages. `uv sync`
+# builds the venv itself on first run - it needs no `python -m venv` step,
+# just a directory it's allowed to write into. `uv sync` also ignores a bare
+# $VIRTUAL_ENV and defaults to creating its own `.venv` under the project
+# directory instead; UV_PROJECT_ENVIRONMENT is what points it at this venv
+# instead of a second, shadow one.
+ENV VIRTUAL_ENV=/opt/venv
+ENV UV_PROJECT_ENVIRONMENT=${VIRTUAL_ENV}
+RUN mkdir -p ${VIRTUAL_ENV} && chown -R ${USERNAME}:${USERNAME} ${VIRTUAL_ENV}
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 USER ${USERNAME}
 

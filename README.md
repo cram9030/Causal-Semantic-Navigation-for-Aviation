@@ -15,24 +15,30 @@ from `geo.sanjoseca.gov`'s ArcGIS Server:
 
 ### Setup
 
-This project uses [uv](https://docs.astral.sh/uv/) for dependency
-management - it reads `pyproject.toml` and installs the exact versions
-pinned in the committed `uv.lock`, rather than resolving fresh against
-whatever's newest on PyPI (torch in particular moves fast enough that an
-unpinned install can silently jump to a much larger/newer CUDA stack
-between one setup and the next). [Install uv](https://docs.astral.sh/uv/getting-started/installation/)
-if you don't have it, then:
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) — installs
+resolve against the committed `uv.lock`, so every contributor and the dev
+container get the identical, reproducible dependency graph rather than
+whatever pip's resolver picks for a loose `>=` bound that day (torch in
+particular moves fast enough that an unpinned install can silently jump to
+a much larger/newer CUDA stack between one setup and the next).
 
 ```bash
 uv sync --extra dev
 ```
 
-This creates a `.venv/` and installs the project in editable mode plus the
-`dev` extra (pytest, responses). Run commands inside it with `uv run`
-(e.g. `uv run pytest`), or `source .venv/bin/activate` to work in it
-directly. Add `--extra ml` and/or `--extra dvc` (or `--all-extras` for
-everything) as needed - see "Dev container" and "Data versioning (DVC)"
-below.
+This creates `.venv` and installs the project into it editable, matching
+`pip install -e ".[dev]"`. Activate it as usual (`source .venv/bin/activate`)
+or prefix commands with `uv run` (e.g. `uv run pytest`) to skip activation.
+Add `--extra viz`, `--extra ml`, and/or `--extra dvc` (or `--all-extras`
+for everything) as needed - see "Dev container" and "Data versioning
+(DVC)" below.
+
+Don't have `uv` installed? See the
+[installation docs](https://docs.astral.sh/uv/getting-started/installation/)
+— it's a single static binary, no Python bootstrap required. The project's
+dependency metadata is still standard `pyproject.toml`, so `pip install
+-e ".[dev]"` in a regular venv continues to work if you'd rather not adopt
+uv; you just lose the lockfile's pinned, reproducible versions.
 
 #### Dev container (GPU-ready)
 
@@ -49,7 +55,8 @@ Phase 0/1 work; the container just runs CPU-only in that case.
 Open the repo in VS Code and choose **Dev Containers: Reopen in Container**,
 or run `devcontainer up` from the [Dev Containers CLI](https://github.com/devcontainers/cli).
 On first build, `.devcontainer/post-create.sh` installs the project
-(`uv sync --all-extras`, from `uv.lock`) and prints whether a GPU is visible.
+(`uv sync --extra dev --extra viz --extra ml --extra dvc`, from `uv.lock`)
+and prints whether a GPU is visible.
 
 ### Tests
 
