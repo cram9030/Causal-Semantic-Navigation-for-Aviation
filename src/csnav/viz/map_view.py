@@ -89,7 +89,7 @@ def _folium():
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ImportError(
             "csnav.viz.map_view needs folium; install the visualization extra with "
-            '`pip install -e ".[viz]"`'
+            "`uv sync --extra viz`"
         ) from exc
     return folium
 

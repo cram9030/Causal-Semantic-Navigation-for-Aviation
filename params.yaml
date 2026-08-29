@@ -1,0 +1,72 @@
+# Swept/versioned configuration for the Phase 0 data-acquisition pipeline
+# and the Phase 1 trajectory/manifest/visualization pipeline.
+#
+# Per CLAUDE.md's coding conventions ("Config lives in versioned config
+# files, not hardcoded constants"), these values are what `dvc.yaml`'s
+# stages read - editing a value here and running `dvc repro` (or
+# `dvc exp run --set-param ...` for a one-off sweep) is how a pipeline
+# stage's inputs are meant to change, not editing the scripts.
+#
+# aoi.* is shared across all three Phase 0 acquisition stages so the
+# imagery, streets, and LIDAR pulls stay aligned to the same envelope.
+# Bbox coordinates are EPSG:4326 (lon/lat degrees) - see
+# docs/INTEGRATION_PLAN.md ss1/ss2 on the WGS84-for-storage convention.
+aoi:
+  min_lon: -121.95
+  min_lat: 37.30
+  max_lon: -121.85
+  max_lat: 37.36
+
+imagery:
+  output_dir: data/raw/dpw_imagery
+  base_url: https://geo.sanjoseca.gov/server/rest/services
+  name_contains: DPW_Imagery
+  coverage_sample_size: 25
+  # `level` is intentionally left unwired into dvc.yaml: the fetch script
+  # auto-detects the finest LOD with real coverage for the AOI (see
+  # scripts/fetch_historic_imagery.py's --level help), and that
+  # auto-detection is itself the behavior worth pinning in most runs. Set
+  # this and add `--level ${imagery.level}` to the fetch_imagery stage's
+  # cmd if a run ever needs to force a specific level.
+  level: null
+
+streets:
+  output: data/raw/csj_streets/aoi.geojson
+  base_url: https://geo.sanjoseca.gov/server/rest/services
+  root: OPN
+  service_name_contains: OpenDataService
+  layer_name_contains: Streets
+  where: "1=1"
+  page_size: 2000
+
+lidar:
+  output: data/raw/lidar/aoi_dem.tif
+  width: 512
+  height: 512
+  pixel_type: F32
+
+# Phase 1 (trajectory/ManifestBuilder + viz) - see
+# docs/phase1_trajectory_manifests.md and docs/INTEGRATION_PLAN.md ss6.
+# `manifest.scenario` is the versioned CONOPS/trajectory-set config
+# (configs/scenarios/*.yaml already carries the rest of the scenario's own
+# settings - camera, transition sampling, window length - so those aren't
+# duplicated here); `tube_radius_m` overrides just that one scenario field
+# and is shared with the viz stage below so a sweep produces matching
+# manifests and maps for the same radius.
+#
+# `tube_radius_m` is the swept CONOPS/altitude parameter CLAUDE.md rule 4
+# requires ("tube radius is a configurable input, not a constant... never
+# hardcoded"): re-run with a different value here, or one-off with
+# `dvc exp run --set-param manifest.tube_radius_m=<value>`, rather than
+# editing the scenario file or ManifestBuilder itself.
+manifest:
+  scenario: configs/scenarios/san_jose_downtown.yaml
+  tube_radius_m: 250.0
+  output: data/manifests/san_jose_downtown.json
+  # A folium review map of the built manifest bundle - kept alongside the
+  # manifest itself (not under out/viz/) so it doesn't collide with the
+  # viz stage's own out/viz/ directory output below.
+  map: data/manifests/san_jose_downtown_review.html
+
+viz:
+  output_dir: out/viz

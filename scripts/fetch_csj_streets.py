@@ -16,7 +16,7 @@ per-frame query.
 
 Example::
 
-    python scripts/fetch_csj_streets.py \\
+    uv run python scripts/fetch_csj_streets.py \\
         --bbox -121.95 37.30 -121.85 37.36 \\
         --output data/raw/csj_streets/downtown.geojson
 """

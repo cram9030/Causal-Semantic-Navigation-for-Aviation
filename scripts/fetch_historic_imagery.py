@@ -27,7 +27,7 @@ coarsest.
 
 Example::
 
-    python scripts/fetch_historic_imagery.py \\
+    uv run python scripts/fetch_historic_imagery.py \\
         --bbox -121.95 37.30 -121.85 37.36 \\
         --output-dir data/raw/dpw_imagery
 """

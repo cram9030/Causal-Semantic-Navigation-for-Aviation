@@ -8,6 +8,7 @@ dist/
 data/raw/
 data/cache/
 data/manifests/
+data/dvc-storage/
 out/
 *.tif
 *.tiff

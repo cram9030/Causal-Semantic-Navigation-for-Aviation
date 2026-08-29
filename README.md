@@ -18,7 +18,9 @@ from `geo.sanjoseca.gov`'s ArcGIS Server:
 Dependencies are managed with [uv](https://docs.astral.sh/uv/) — installs
 resolve against the committed `uv.lock`, so every contributor and the dev
 container get the identical, reproducible dependency graph rather than
-whatever pip's resolver picks for a loose `>=` bound that day.
+whatever pip's resolver picks for a loose `>=` bound that day (torch in
+particular moves fast enough that an unpinned install can silently jump to
+a much larger/newer CUDA stack between one setup and the next).
 
 ```bash
 uv sync --extra dev
@@ -27,6 +29,9 @@ uv sync --extra dev
 This creates `.venv` and installs the project into it editable, matching
 `pip install -e ".[dev]"`. Activate it as usual (`source .venv/bin/activate`)
 or prefix commands with `uv run` (e.g. `uv run pytest`) to skip activation.
+Add `--extra viz`, `--extra ml`, and/or `--extra dvc` (or `--all-extras`
+for everything) as needed - see "Dev container" and "Data versioning
+(DVC)" below.
 
 Don't have `uv` installed? See the
 [installation docs](https://docs.astral.sh/uv/getting-started/installation/)
@@ -39,8 +44,9 @@ uv; you just lose the lockfile's pinned, reproducible versions.
 
 `.devcontainer/` defines a CUDA 12.4 dev container (VS Code Dev Containers /
 GitHub Codespaces / any [Dev Containers spec](https://containers.dev/)
-tool), with the [Claude Code CLI](https://code.claude.com/docs/en/devcontainer)
-preinstalled. It picks up a host GPU automatically when one is present
+tool), with [uv](https://docs.astral.sh/uv/) and the
+[Claude Code CLI](https://code.claude.com/docs/en/devcontainer) preinstalled.
+It picks up a host GPU automatically when one is present
 (`hostRequirements.gpu: "optional"`) and installs the `ml` extra (torch,
 torchvision, transformers, scikit-learn) needed for fine-tuning Mask2Former
 in Phase 2 — see `docs/INTEGRATION_PLAN.md` §5. No GPU is required for
@@ -49,7 +55,8 @@ Phase 0/1 work; the container just runs CPU-only in that case.
 Open the repo in VS Code and choose **Dev Containers: Reopen in Container**,
 or run `devcontainer up` from the [Dev Containers CLI](https://github.com/devcontainers/cli).
 On first build, `.devcontainer/post-create.sh` installs the project
-(`uv sync --extra dev --extra ml`) and prints whether a GPU is visible.
+(`uv sync --extra dev --extra viz --extra ml --extra dvc`, from `uv.lock`)
+and prints whether a GPU is visible.
 
 ### Tests
 
@@ -165,6 +172,76 @@ Both paths are confirmed working against the live service: `--identify -121.9
 print a single point's elevation rather than fetching a raster. See
 [`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md) for
 the full story of how this data source was chosen.
+
+### Data versioning (DVC)
+
+The Phase 0 fetch scripts and the Phase 1 manifest/visualization scripts
+are wired up as a [DVC](https://dvc.org) pipeline (`dvc.yaml` +
+`params.yaml`), so the AOI-scoped data pulls and the manifest/viz builds
+are reproducible and their large outputs (imagery GeoTIFFs, the streets
+GeoJSON, the LIDAR DEM, the manifest bundle, the trajectory/transition
+maps) are versioned outside of git rather than just
+gitignored-and-hoped-for. `data/raw/`, `data/manifests/`, `out/`, and
+`*.tif` stay gitignored as before - that's unaffected by and compatible
+with DVC, which tracks the actual bytes separately via its own
+content-addressed cache, referenced from git only through
+`dvc.yaml`/`dvc.lock`.
+
+```
+fetch_imagery                    fetch_lidar    visualize_trajectories
+fetch_streets -> build_manifests
+```
+
+`build_manifests` depends on `fetch_streets`' pinned output (not the live
+CSJ Streets layer) so the manifest it builds is reproducible from the
+exact street geometry it was built against - the live layer refreshes
+weekly and would not reproduce it (see `docs/INTEGRATION_PLAN.md` ss3.3
+"Pinning"). `visualize_trajectories` only needs the scenario config, so it
+has no such dependency and can run standalone.
+
+```bash
+uv sync --extra dev --extra dvc
+uv run dvc repro          # (re)run any stage whose script/deps/params changed
+uv run dvc dag             # show the pipeline graph
+uv run dvc push / uv run dvc pull # sync tracked data with the configured remote
+```
+
+`--extra dvc` only needs to be passed to `uv sync` once - the venv keeps
+it installed for subsequent `uv run` calls, dvc included.
+
+Stage parameters (AOI bbox, service URLs, output paths, and - the swept
+CONOPS/altitude parameter CLAUDE.md rule 4 calls for -
+`manifest.tube_radius_m`) live in `params.yaml`, not hardcoded in the
+scripts - edit a value and `dvc repro` reruns only the affected stage(s).
+For a one-off run without touching the file, use
+`uv run dvc exp run --set-param manifest.tube_radius_m=500 ...` (or
+`aoi.min_lon=-121.90`, etc.) to sweep a value without a code change.
+
+The `.dvc/config` checked in here points the default remote at a
+**local placeholder directory** (`data/dvc-storage/`, gitignored - not one
+of the DVC-tracked working outputs like `data/raw/` or `data/manifests/`,
+just where the "remote" cache lives locally) so a solo checkout works with
+zero setup. It's kept inside the repo tree rather than a sibling directory
+so it survives a devcontainer rebuild: `.devcontainer/devcontainer.json`
+bind-mounts only the repo folder itself, so anything written outside it
+(e.g. a sibling of the checkout under `/workspaces/`) lives in the
+container's throwaway layer and is silently lost on rebuild. Before this
+is used by more than one machine/collaborator, or at San Jose-imagery
+scale, swap it for real object storage, e.g.:
+
+```bash
+uv run dvc remote add -d storage s3://<bucket>/csnav-dvc     # or gs://, azure://, etc.
+```
+
+(and add the matching extra - `dvc[s3]`, `dvc[gs]`, `dvc[azure]` - to
+`pyproject.toml`'s `dvc` group in place of the plain `dvc` pin.)
+
+Unimplemented past Phase 1 (see `docs/INTEGRATION_PLAN.md` ss6): once
+`segmentation/` lands, stages for Mask2Former training/checkpoints; and,
+once `eval/` lands, `dvc.yaml` `metrics:`/`plots:` entries for the Phase 4
+Integrity Risk / Time-to-Alert / Availability comparison, so a
+`manifest.tube_radius_m` sweep produces a directly comparable leaderboard
+across radii via `dvc exp show`.
 
 ## Phase 1: trajectory set, transitions, tubes, and precomputed manifests
 

@@ -24,13 +24,13 @@ weekly and will not reproduce it.
 
 Example (live)::
 
-    python scripts/build_manifests.py \\
+    uv run python scripts/build_manifests.py \\
         --scenario configs/scenarios/san_jose_downtown.yaml \\
         --output data/manifests/san_jose_downtown_r250.json
 
 Example (from an archived streets pull, plus a review map)::
 
-    python scripts/build_manifests.py \\
+    uv run python scripts/build_manifests.py \\
         --scenario configs/scenarios/san_jose_downtown.yaml \\
         --streets-geojson data/raw/csj_streets/downtown.geojson \\
         --output data/manifests/san_jose_downtown_r250.json \\

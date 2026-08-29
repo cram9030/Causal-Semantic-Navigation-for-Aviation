@@ -24,13 +24,13 @@ a scenario config alone - no CSJ Streets pull and no manifest needed.
 
 Example::
 
-    python scripts/visualize_trajectories.py \\
+    uv run python scripts/visualize_trajectories.py \\
         --scenario configs/scenarios/san_jose_downtown.yaml \\
         --output-dir out/viz
 
 Sweep a different tube radius without editing the config::
 
-    python scripts/visualize_trajectories.py \\
+    uv run python scripts/visualize_trajectories.py \\
         --scenario configs/scenarios/san_jose_downtown.yaml \\
         --tube-radius 500 --output-dir out/viz_r500
 """

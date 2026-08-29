@@ -11,7 +11,7 @@ Two complementary views, both emitting self-contained interactive HTML:
 
 Both need the optional visualization dependencies::
 
-    pip install -e ".[viz]"
+    uv sync --extra viz
 
 Importing this package does not pull those in - the submodules do, so the rest
 of :mod:`csnav` stays installable without Plotly or folium.

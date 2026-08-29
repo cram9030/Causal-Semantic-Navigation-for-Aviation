@@ -11,7 +11,7 @@ exactly the requested AOI/point - nothing is cached locally.
 
 Example::
 
-    python scripts/fetch_lidar_elevation.py \\
+    uv run python scripts/fetch_lidar_elevation.py \\
         --bbox -121.95 37.30 -121.85 37.36 \\
         --output data/raw/lidar/downtown_dem.tif
 """
