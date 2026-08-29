@@ -168,14 +168,29 @@ the full story of how this data source was chosen.
 
 ### Data versioning (DVC)
 
-The three fetch scripts above are also wired up as a [DVC](https://dvc.org)
-pipeline (`dvc.yaml` + `params.yaml`), so the AOI-scoped data pulls are
-reproducible and their large outputs (imagery GeoTIFFs, the streets
-GeoJSON, the LIDAR DEM) are versioned outside of git rather than just
-gitignored-and-hoped-for. `data/raw/` and `*.tif` stay gitignored as
-before - that's unaffected by and compatible with DVC, which tracks the
-actual bytes separately via its own content-addressed cache, referenced
-from git only through `dvc.yaml`/`dvc.lock`.
+The Phase 0 fetch scripts and the Phase 1 manifest/visualization scripts
+are wired up as a [DVC](https://dvc.org) pipeline (`dvc.yaml` +
+`params.yaml`), so the AOI-scoped data pulls and the manifest/viz builds
+are reproducible and their large outputs (imagery GeoTIFFs, the streets
+GeoJSON, the LIDAR DEM, the manifest bundle, the trajectory/transition
+maps) are versioned outside of git rather than just
+gitignored-and-hoped-for. `data/raw/`, `data/manifests/`, `out/`, and
+`*.tif` stay gitignored as before - that's unaffected by and compatible
+with DVC, which tracks the actual bytes separately via its own
+content-addressed cache, referenced from git only through
+`dvc.yaml`/`dvc.lock`.
+
+```
+fetch_imagery                    fetch_lidar    visualize_trajectories
+fetch_streets -> build_manifests
+```
+
+`build_manifests` depends on `fetch_streets`' pinned output (not the live
+CSJ Streets layer) so the manifest it builds is reproducible from the
+exact street geometry it was built against - the live layer refreshes
+weekly and would not reproduce it (see `docs/INTEGRATION_PLAN.md` ss3.3
+"Pinning"). `visualize_trajectories` only needs the scenario config, so it
+has no such dependency and can run standalone.
 
 ```bash
 uv sync --extra dev --extra dvc
@@ -187,10 +202,13 @@ uv run dvc push / uv run dvc pull # sync tracked data with the configured remote
 `--extra dvc` only needs to be passed to `uv sync` once - the venv keeps
 it installed for subsequent `uv run` calls, dvc included.
 
-Stage parameters (AOI bbox, service URLs, output paths) live in
-`params.yaml`, not hardcoded in the scripts - edit a value and `dvc repro`
-reruns only the affected stage(s). For a one-off run without touching the
-file, use `uv run dvc exp run --set-param aoi.min_lon=-121.90 ...`.
+Stage parameters (AOI bbox, service URLs, output paths, and - the swept
+CONOPS/altitude parameter CLAUDE.md rule 4 calls for -
+`manifest.tube_radius_m`) live in `params.yaml`, not hardcoded in the
+scripts - edit a value and `dvc repro` reruns only the affected stage(s).
+For a one-off run without touching the file, use
+`uv run dvc exp run --set-param manifest.tube_radius_m=500 ...` (or
+`aoi.min_lon=-121.90`, etc.) to sweep a value without a code change.
 
 The `.dvc/config` checked in here points the default remote at a
 **local placeholder directory** (`../csnav-dvc-storage`, a sibling of the
@@ -205,15 +223,12 @@ uv run dvc remote add -d storage s3://<bucket>/csnav-dvc     # or gs://, azure:/
 (and add the matching extra - `dvc[s3]`, `dvc[gs]`, `dvc[azure]` - to
 `pyproject.toml`'s `dvc` group in place of the plain `dvc` pin.)
 
-Unimplemented past Phase 0 (see `docs/INTEGRATION_PLAN.md` ss6): a
-`build_manifest` stage for `trajectory/ManifestBuilder` once it exists,
-parameterized by `manifest.tube_radius_m` in `params.yaml` (placeholder
-left commented there) so the CONOPS/altitude tube-radius sweep CLAUDE.md
-calls for is a `dvc exp run --set-param manifest.tube_radius_m=<value>`
-away rather than a code change; and, once `segmentation/` lands, stages
-for Mask2Former training/checkpoints and `dvc.yaml` `metrics:`/`plots:`
-entries for the Phase 4 Integrity Risk / Time-to-Alert / Availability
-comparison.
+Unimplemented past Phase 1 (see `docs/INTEGRATION_PLAN.md` ss6): once
+`segmentation/` lands, stages for Mask2Former training/checkpoints; and,
+once `eval/` lands, `dvc.yaml` `metrics:`/`plots:` entries for the Phase 4
+Integrity Risk / Time-to-Alert / Availability comparison, so a
+`manifest.tube_radius_m` sweep produces a directly comparable leaderboard
+across radii via `dvc exp show`.
 
 ## Phase 1: trajectory set, transitions, tubes, and precomputed manifests
 

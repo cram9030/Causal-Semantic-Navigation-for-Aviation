@@ -1,8 +1,9 @@
-# DVC pipeline for the Phase 0 data-acquisition scripts (see
-# docs/INTEGRATION_PLAN.md ss5). Each stage wraps one of the existing
-# scripts/fetch_*.py CLIs as-is; nothing about those scripts changed to
+# DVC pipeline for the Phase 0 data-acquisition scripts and the Phase 1
+# trajectory/manifest/visualization scripts (see docs/INTEGRATION_PLAN.md
+# ss5 and docs/phase1_trajectory_manifests.md). Each stage wraps one of the
+# existing scripts/*.py CLIs as-is; nothing about those scripts changed to
 # wire this up. Values come from params.yaml so a rerun with different
-# AOI/service settings is `dvc repro` after editing params.yaml (or
+# AOI/service/CONOPS settings is `dvc repro` after editing params.yaml (or
 # `dvc exp run --set-param ...` for a one-off), not an edited script.
 #
 # `data/raw/` and `*.tif` are already gitignored (see .gitignore) - that's
@@ -85,3 +86,57 @@ stages:
       - lidar.pixel_type
     outs:
       - ${lidar.output}
+
+  # Phase 1: builds off fetch_streets' pinned pull rather than the live CSJ
+  # Streets layer, so the manifest DVC tracks is reproducible from the
+  # exact street geometry it was built against - the live layer refreshes
+  # weekly and would not reproduce it (INTEGRATION_PLAN.md ss3.3
+  # "Pinning"). `${streets.output}` as a dep is what chains this stage
+  # after fetch_streets in the DAG.
+  build_manifests:
+    cmd: >-
+      python scripts/build_manifests.py
+      --scenario ${manifest.scenario}
+      --streets-geojson ${streets.output}
+      --tube-radius ${manifest.tube_radius_m}
+      --output ${manifest.output}
+      --map ${manifest.map}
+    deps:
+      - scripts/build_manifests.py
+      - src/csnav/trajectory
+      - src/csnav/data/arcgis
+      - src/csnav/data/lidar.py
+      - src/csnav/viz/map_view.py
+      - ${manifest.scenario}
+      - ${streets.output}
+    params:
+      - manifest.scenario
+      - manifest.tube_radius_m
+      - manifest.output
+      - manifest.map
+    outs:
+      - ${manifest.output}
+      - ${manifest.map}
+
+  # Independent of build_manifests: renders straight from the scenario
+  # config (no CSJ Streets pull, no manifest) per
+  # scripts/visualize_trajectories.py's own docstring. Shares
+  # manifest.tube_radius_m so a sweep produces maps and manifests for the
+  # same radius.
+  visualize_trajectories:
+    cmd: >-
+      python scripts/visualize_trajectories.py
+      --scenario ${manifest.scenario}
+      --tube-radius ${manifest.tube_radius_m}
+      --output-dir ${viz.output_dir}
+    deps:
+      - scripts/visualize_trajectories.py
+      - src/csnav/trajectory
+      - src/csnav/viz
+      - ${manifest.scenario}
+    params:
+      - manifest.scenario
+      - manifest.tube_radius_m
+      - viz.output_dir
+    outs:
+      - ${viz.output_dir}

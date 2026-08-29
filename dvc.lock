@@ -1,0 +1,37 @@
+schema: '2.0'
+stages:
+  visualize_trajectories:
+    cmd: python scripts/visualize_trajectories.py --scenario 
+      configs/scenarios/san_jose_downtown.yaml --tube-radius 250.0 --output-dir 
+      out/viz
+    deps:
+    - path: configs/scenarios/san_jose_downtown.yaml
+      hash: md5
+      md5: 6b84878d2607477fe6b7962e38f6f698
+      size: 9001
+    - path: scripts/visualize_trajectories.py
+      hash: md5
+      md5: bfc73be6b4f6ff4ae7b2820e8abb7798
+      size: 6998
+      isexec: true
+    - path: src/csnav/trajectory
+      hash: md5
+      md5: 981ca607afd2cdb8921d88a2fdbea519.dir
+      size: 251783
+      nfiles: 18
+    - path: src/csnav/viz
+      hash: md5
+      md5: 123c5e43e391cf806cf98954c5a34350.dir
+      size: 132936
+      nfiles: 11
+    params:
+      params.yaml:
+        manifest.scenario: configs/scenarios/san_jose_downtown.yaml
+        manifest.tube_radius_m: 250.0
+        viz.output_dir: out/viz
+    outs:
+    - path: out/viz
+      hash: md5
+      md5: 7c811e92e1c6106850492d5e1f5fc1de.dir
+      size: 10335764
+      nfiles: 13
