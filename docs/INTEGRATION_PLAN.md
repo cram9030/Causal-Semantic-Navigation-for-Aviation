@@ -252,9 +252,44 @@ reach across a window rather than from the cone angle alone. The margin
 defaults to zero, so the first proof of concept behaves as if the aircraft were
 level.
 
-`data/ground_truth/`, `segmentation/`, `scene_graph/`, `causal_model/`,
-`baseline_slam/` and `eval/` remain unimplemented (Phase 2+). See
-`docs/phase1_trajectory_manifests.md`.
+`segmentation/`, `scene_graph/`, `causal_model/`, `baseline_slam/` and
+`eval/` remain unimplemented (Phase 2+, beyond the ground-truth builder
+below). See `docs/phase1_trajectory_manifests.md`.
+
+**Implementation note (Phase 2, ground truth only):** the rasterizer lands
+under `src/csnav/` too, as `csnav.data.ground_truth`, for the same reason as
+Phases 0/1 - one installable package rather than a split `data/ground_truth/`
+tree:
+
+```
+src/csnav/data/ground_truth/
+├── labels.py       # PanopticClass, SegmentInfo, PanopticLabel (2-band GeoTIFF + JSON sidecar)
+├── rasterize.py    # GroundTruthBuilder.rasterize(streets, tile, width, height, transform)
+└── checks.py       # automated shape/instance-consistency checks over a label set
+
+src/csnav/viz/
+├── ground_truth_view.py     # folium review map (vectorized straight back out of the label rasters)
+└── ground_truth_gallery.py  # static paged HTML QA gallery for exhaustive per-tile review
+```
+
+Two departures from §7's UML sketch of `GroundTruthBuilder.rasterize(streets,
+tile) -> PanopticLabel`: it takes the target pixel grid
+(`width`/`height`/`transform`) as explicit arguments, read by the caller from
+an already-fetched, already-reprojected imagery GeoTIFF rather than fetched
+live via `ArcGISTileClient` - this keeps rasterization a pure, easily-tested
+function of geometry and guarantees pixel-for-pixel alignment with the
+imagery a training loader actually reads; and `streets` is an in-memory
+`StreetSegment` list from an archived GeoJSON pull, not a live
+`CSJStreetsClient` query - the same "pin to an archived snapshot, don't
+re-query the weekly-refreshed live layer" reasoning
+`csnav.trajectory.manifest_builder.StaticStreetsSource` already applies.
+Tiles to rasterize can come from a full AOI-wide scan of an already-fetched
+imagery directory (the default - what Mask2Former training needs) or be
+restricted to one pinned `ManifestBundle`'s tiles (`--manifest`, for a
+narrower regional-sensitivity check). See
+`docs/phase2_ground_truth_rasterization.md` for the rest, including the
+open question on pairing a historic imagery vintage with a matching
+historic street-network snapshot.
 
 ---
 

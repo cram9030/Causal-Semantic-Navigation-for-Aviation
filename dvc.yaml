@@ -140,3 +140,67 @@ stages:
       - viz.output_dir
     outs:
       - ${viz.output_dir}
+
+  # Phase 2 (data/ground_truth/, `csnav.data.ground_truth`): rasterize CSJ
+  # street geometry/widths into panoptic labels over one imagery vintage's
+  # tiles. `foreach` over ground_truth.vintages so adding another (row,
+  # imagery vintage) <-> (street-network snapshot) pairing - e.g. a historic
+  # pull from `fetch_csj_streets.py --historic-moment` matched to a historic
+  # imagery service - is a params.yaml edit, not a new stage.
+  build_ground_truth:
+    foreach: ${ground_truth.vintages}
+    do:
+      cmd: >-
+        python scripts/build_ground_truth.py
+        --imagery-dir ${item.imagery_dir}
+        --streets-geojson ${item.streets_geojson}
+        --output-dir ${ground_truth.output_dir}/${key}
+        --default-width-m ${ground_truth.default_width_m}
+        --intersection-radius-m ${ground_truth.intersection_radius_m}
+        --intersection-snap-m ${ground_truth.intersection_snap_m}
+      deps:
+        - scripts/build_ground_truth.py
+        - src/csnav/data/ground_truth
+        - src/csnav/data/arcgis/streets.py
+        - ${item.imagery_dir}
+        - ${item.streets_geojson}
+      outs:
+        - ${ground_truth.output_dir}/${key}
+
+  # Systematic QA gate on each vintage's rasterized label set - shape/instance
+  # consistency, orphan pixels, default-width fallback rate. Exits non-zero on
+  # any error-severity issue, so this can also serve as a CI check.
+  check_ground_truth:
+    foreach: ${ground_truth.vintages}
+    do:
+      cmd: >-
+        python scripts/check_ground_truth.py
+        --labels-dir ${ground_truth.output_dir}/${key}
+        --report ${ground_truth.output_dir}/${key}_${ground_truth.check_report}
+      deps:
+        - scripts/check_ground_truth.py
+        - src/csnav/data/ground_truth
+        - ${ground_truth.output_dir}/${key}
+      outs:
+        - ${ground_truth.output_dir}/${key}_${ground_truth.check_report}
+
+  # Visual QA: the geographic review map plus the paged HTML gallery for
+  # exhaustively eyeballing a whole label set, tile by tile.
+  visualize_ground_truth:
+    foreach: ${ground_truth.vintages}
+    do:
+      cmd: >-
+        python scripts/visualize_ground_truth.py
+        --labels-dir ${ground_truth.output_dir}/${key}
+        --imagery-dir ${item.imagery_dir}
+        --map ${ground_truth.viz_output_dir}/${key}_map.html
+        --gallery-dir ${ground_truth.viz_output_dir}/${key}_gallery
+      deps:
+        - scripts/visualize_ground_truth.py
+        - src/csnav/viz/ground_truth_view.py
+        - src/csnav/viz/ground_truth_gallery.py
+        - ${ground_truth.output_dir}/${key}
+        - ${item.imagery_dir}
+      outs:
+        - ${ground_truth.viz_output_dir}/${key}_map.html
+        - ${ground_truth.viz_output_dir}/${key}_gallery

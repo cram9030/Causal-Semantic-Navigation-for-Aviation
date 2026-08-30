@@ -70,3 +70,38 @@ manifest:
 
 viz:
   output_dir: out/viz
+
+# Phase 2 (data/ground_truth/ - implemented as `csnav.data.ground_truth`) -
+# rasterize CSJ street geometry/widths into panoptic labels over imagery
+# tiles, see docs/phase2_ground_truth_rasterization.md and
+# docs/INTEGRATION_PLAN.md §5.
+#
+# `vintages` pairs one already-fetched imagery vintage (a directory of
+# {level}_{row}_{col}.tif tiles, e.g. one of fetch_imagery's per-service
+# output subdirectories) with the street-network snapshot that matches it -
+# `streets.output` (the current pull) for the current cache, or a separate
+# archived GeoJSON (see `scripts/fetch_csj_streets.py --historic-moment`) for
+# an older one. Add another entry here - not another stage in dvc.yaml - to
+# bring another imagery vintage into the training set; the `build_ground_truth`
+# stage below is a `foreach` over this map, so each entry gets its own run and
+# its own output directory automatically.
+ground_truth:
+  vintages:
+    current:
+      imagery_dir: data/raw/dpw_imagery/DPW_ImageryCached2025
+      streets_geojson: data/raw/csj_streets/aoi.geojson
+  # Fallback roadway width (meters) when a street segment carries none of
+  # CSJ's own width fields - CLAUDE.md's "config lives in versioned config
+  # files" convention, not a constant in csnav.data.ground_truth.rasterize.
+  default_width_m: 6.0
+  # Radius (meters) a derived road-road intersection is rasterized as.
+  intersection_radius_m: 3.0
+  # Clustering tolerance (meters) for merging nearby computed junction points
+  # into one intersection instance.
+  intersection_snap_m: 2.0
+  output_dir: data/ground_truth
+  # Sibling of viz.output_dir (out/viz), not nested inside it - DVC treats
+  # out/viz as one tracked directory owned by the visualize_trajectories
+  # stage, and rejects another stage's output living inside it.
+  viz_output_dir: out/viz_ground_truth
+  check_report: ground_truth_check_report.json

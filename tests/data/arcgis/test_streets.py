@@ -2,7 +2,14 @@ import pytest
 import responses
 
 from csnav.data.arcgis.models import Extent
-from csnav.data.arcgis.streets import CSJStreetsClient, CSJStreetsError, StreetSegment
+from csnav.data.arcgis.streets import (
+    CSJStreetsClient,
+    CSJStreetsError,
+    StreetSegment,
+    segment_geometry,
+    street_name,
+    street_width_m,
+)
 
 LAYER_URL = "https://example.test/server/rest/services/OPN/OPN_OpenDataService/MapServer/60"
 
@@ -128,3 +135,51 @@ def test_street_segment_round_trips_to_geojson_feature():
     feature = segment.to_geojson_feature()
     assert feature["geometry"] == {"type": "LineString", "coordinates": [[0, 0], [1, 1]]}
     assert feature["properties"] == {"STREETNAME": "First St"}
+
+
+@responses.activate
+def test_query_forwards_historic_moment_param():
+    responses.add(responses.GET, f"{LAYER_URL}/query", json={"features": []})
+
+    client = CSJStreetsClient(LAYER_URL)
+    client.query(historic_moment="2019-01-01T00:00:00Z")
+
+    url = responses.calls[0].request.url
+    assert "historicMoment=2019-01-01T00%3A00%3A00Z" in url
+
+
+@responses.activate
+def test_query_omits_historic_moment_by_default():
+    responses.add(responses.GET, f"{LAYER_URL}/query", json={"features": []})
+
+    client = CSJStreetsClient(LAYER_URL)
+    client.query()
+
+    assert "historicMoment" not in responses.calls[0].request.url
+
+
+def test_street_width_m_converts_feet_to_meters():
+    assert street_width_m({"WIDTH": 40.0}) == pytest.approx(40.0 * 0.3048)
+
+
+def test_street_width_m_tries_candidates_in_order():
+    assert street_width_m({"ROADWIDTH": 20.0}) == pytest.approx(20.0 * 0.3048)
+
+
+def test_street_width_m_none_when_absent():
+    assert street_width_m({}) is None
+    assert street_width_m({"WIDTH": ""}) is None
+
+
+def test_street_name_tries_candidates_in_order():
+    assert street_name({"FULLNAME": "Main St"}) == "Main St"
+    assert street_name({}) is None
+
+
+def test_segment_geometry_linestring_and_multilinestring():
+    single = StreetSegment(object_id=1, parts=(((0, 0), (1, 1)),), attributes={})
+    assert list(segment_geometry(single).coords) == [(0, 0), (1, 1)]
+
+    multi = StreetSegment(object_id=2, parts=(((0, 0), (1, 1)), ((2, 2), (3, 3))), attributes={})
+    geometry = segment_geometry(multi)
+    assert [list(part.coords) for part in geometry.geoms] == [[(0, 0), (1, 1)], [(2, 2), (3, 3)]]

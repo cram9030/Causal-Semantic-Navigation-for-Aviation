@@ -14,11 +14,29 @@ This is a one-shot pull for inspecting/caching the dataset locally - it is
 precomputed, per-trajectory-window manifest built in Phase 1) or a live
 per-frame query.
 
+``--historic-moment`` requests the network as it stood at a past edit moment
+instead of today's - useful for pairing ground-truth labels
+(``scripts/build_ground_truth.py``) with a historic imagery vintage rather
+than the current network, since roads change over time. This only returns
+something different from the current pull if CSJ Streets has ArcGIS
+*archiving* enabled server-side, which is **not confirmed** for this layer -
+see ``docs/phase2_ground_truth_rasterization.md``. Check
+``CSJStreetsClient.get_metadata()``'s ``archivingInfo`` field first; if
+archiving isn't enabled, this flag has no effect and the current network is
+returned regardless of the moment requested.
+
 Example::
 
     uv run python scripts/fetch_csj_streets.py \\
         --bbox -121.95 37.30 -121.85 37.36 \\
         --output data/raw/csj_streets/downtown.geojson
+
+Example (a historic moment, if the layer supports it)::
+
+    uv run python scripts/fetch_csj_streets.py \\
+        --bbox -121.95 37.30 -121.85 37.36 \\
+        --historic-moment 2019-01-01T00:00:00Z \\
+        --output data/raw/csj_streets/downtown_2019.geojson
 """
 
 from __future__ import annotations
@@ -83,6 +101,14 @@ def main() -> None:
         help="restrict the query to this EPSG:4326 envelope (default: the whole layer)",
     )
     parser.add_argument("--where", default="1=1", help="ArcGIS SQL WHERE clause (default: all features)")
+    parser.add_argument(
+        "--historic-moment", default=None,
+        help=(
+            "ISO 8601 timestamp (or epoch milliseconds) to read the layer as of, via ArcGIS's "
+            "historicMoment parameter - only has an effect if this layer has archiving enabled "
+            "(unconfirmed; see the module docstring). Omit for the current network."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True, help="output .geojson path")
     parser.add_argument("--page-size", type=int, default=2000)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -97,7 +123,7 @@ def main() -> None:
     if args.bbox:
         bbox = Extent(xmin=args.bbox[0], ymin=args.bbox[1], xmax=args.bbox[2], ymax=args.bbox[3], wkid=4326)
 
-    segments = client.query(bbox=bbox, where=args.where)
+    segments = client.query(bbox=bbox, where=args.where, historic_moment=args.historic_moment)
     logger.info("fetched %d street segment(s)", len(segments))
 
     feature_collection = {

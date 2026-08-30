@@ -188,8 +188,10 @@ content-addressed cache, referenced from git only through
 `dvc.yaml`/`dvc.lock`.
 
 ```
-fetch_imagery                    fetch_lidar    visualize_trajectories
-fetch_streets -> build_manifests
+fetch_imagery -+                                      fetch_lidar    visualize_trajectories
+                +-> build_ground_truth@<vintage> -+
+fetch_streets -+-> build_manifests                +-> check_ground_truth@<vintage>
+                                                    +-> visualize_ground_truth@<vintage>
 ```
 
 `build_manifests` depends on `fetch_streets`' pinned output (not the live
@@ -236,8 +238,16 @@ uv run dvc remote add -d storage s3://<bucket>/csnav-dvc     # or gs://, azure:/
 (and add the matching extra - `dvc[s3]`, `dvc[gs]`, `dvc[azure]` - to
 `pyproject.toml`'s `dvc` group in place of the plain `dvc` pin.)
 
-Unimplemented past Phase 1 (see `docs/INTEGRATION_PLAN.md` ss6): once
-`segmentation/` lands, stages for Mask2Former training/checkpoints; and,
+`build_ground_truth`, `check_ground_truth`, and `visualize_ground_truth` are
+each a `foreach` over `params.yaml`'s `ground_truth.vintages` map, one entry
+per (imagery vintage directory, matching street-network snapshot) pairing -
+see [`docs/phase2_ground_truth_rasterization.md`](docs/phase2_ground_truth_rasterization.md).
+Adding another vintage to the training set is a `params.yaml` edit, not a new
+stage.
+
+Unimplemented past Phase 2's ground-truth builder (see
+`docs/INTEGRATION_PLAN.md` ss6): once `segmentation/` lands, stages for
+Mask2Former training/checkpoints (fed by `build_ground_truth`'s output); and,
 once `eval/` lands, `dvc.yaml` `metrics:`/`plots:` entries for the Phase 4
 Integrity Risk / Time-to-Alert / Availability comparison, so a
 `manifest.tube_radius_m` sweep produces a directly comparable leaderboard
@@ -420,3 +430,88 @@ Every metric geometry operation (RNP tube containment, street buffers, FOV
 projection) should go through this conversion rather than doing
 distance/area math directly on raw WGS84 degrees - see
 [`docs/phase0_local_frame.md`](docs/phase0_local_frame.md).
+
+## Phase 2: ground-truth panoptic label rasterization
+
+This phase rasterizes CSJ street geometry/widths into panoptic ground-truth
+labels over imagery tiles - the training data Mask2Former fine-tuning (the
+rest of Phase 2, not yet built) will need - plus the tooling to actually
+trust a large label set: automated structural checks, a geographic review
+map, and a static QA gallery for paging through tiles by eye. See
+[`docs/phase2_ground_truth_rasterization.md`](docs/phase2_ground_truth_rasterization.md).
+
+A label is two classes only - road and intersection (background otherwise) -
+matching the same split Phase 1's manifests already make for the same
+reason: the eventual Mask2Former match step detects the two separately.
+Storage is one 2-band GeoTIFF per tile (semantic class id, instance id),
+pixel-aligned to that tile's source imagery, plus a JSON sidecar of
+per-instance metadata (segment id/name/width, whether the width fell back to
+a default) - close enough to COCO panoptic's own shape that converting to it
+later shouldn't need much.
+
+### Building a label set
+
+```bash
+uv run python scripts/build_ground_truth.py \
+    --imagery-dir data/raw/dpw_imagery/DPW_ImageryCached2025 \
+    --streets-geojson data/raw/csj_streets/aoi.geojson \
+    --output-dir data/ground_truth/current
+```
+
+Rasterizes every `{level}_{row}_{col}.tif` tile already fetched under
+`--imagery-dir` (the full-AOI grid Mask2Former training needs) against the
+street geometry in `--streets-geojson` (an archived pull, never a live
+query - pin ground truth to the street network as it stood for that imagery
+vintage, not whatever the weekly-refreshed live layer currently holds).
+Pass `--manifest data/manifests/<bundle>.json` instead to restrict the run
+to one pinned manifest's tiles - useful for a quick regional-sensitivity
+check without rasterizing the whole AOI. `--default-width-m` overrides the
+fallback width used where CSJ doesn't publish one for a segment (6 m by
+default - one lane each way); `--overwrite` re-rasterizes tiles that already
+have a label.
+
+### Checking and visualizing a label set
+
+```bash
+uv run python scripts/check_ground_truth.py --labels-dir data/ground_truth/current
+
+uv run python scripts/visualize_ground_truth.py \
+    --labels-dir data/ground_truth/current \
+    --imagery-dir data/raw/dpw_imagery/DPW_ImageryCached2025 \
+    --map out/viz_ground_truth/current_map.html \
+    --gallery-dir out/viz_ground_truth/current_gallery
+```
+
+`check_ground_truth.py` is the systematic pass: it verifies every label's
+raster actually matches its own JSON sidecar (shape, every instance id
+accounted for, no orphan pixels) and reports the default-width fallback
+rate per tile, exiting non-zero on any structural error - usable as a CI
+gate on `build_ground_truth`'s output.
+
+`visualize_ground_truth.py` is for a person to look at the result:
+
+- **the review map** (`--map`) draws every tile's footprint plus its
+  road/intersection polygons - vectorized straight back out of the label
+  rasters, so it shows exactly what a training loader would read - over San
+  Jose imagery, toggleable by layer.
+- **the QA gallery** (`--gallery-dir`) is a self-contained static HTML page
+  built for paging through *every* tile quickly: a thumbnail grid drives a
+  large viewer with two pixel-aligned images (imagery, and a transparent
+  label overlay) stacked under one opacity slider - "imagery only" /
+  "overlay" / "labels only" are all the same slider, nothing extra to
+  render - with arrow-key navigation and a per-tile "flag" checkbox
+  (persisted in the page's own `localStorage`, exportable as a plain text
+  list) for marking tiles worth a second look while moving through a large
+  set.
+
+### Pairing imagery vintages with a matching street network
+
+`params.yaml`'s `ground_truth.vintages` maps each imagery vintage directory
+to the street-network snapshot that should label it - `dvc.yaml`'s
+`build_ground_truth` stage is a `foreach` over this map, so training on
+another vintage is a config edit. `scripts/fetch_csj_streets.py
+--historic-moment` forwards ArcGIS's `historicMoment` parameter for reading
+an archiving-enabled layer as of a past moment, but **whether CSJ Streets
+actually has archiving enabled is unconfirmed** (this codebase's sandbox
+can't reach `geo.sanjoseca.gov` to check) - see
+`docs/phase2_ground_truth_rasterization.md` for the fallback if it doesn't.
