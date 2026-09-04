@@ -472,7 +472,13 @@ have a label.
 
 ### Checking and visualizing a label set
 
+`check_ground_truth.py` needs only the base install; `visualize_ground_truth.py`
+renders a folium map, so it needs the same `viz` extra Phase 1's visualizer
+does:
+
 ```bash
+uv sync --extra dev --extra viz
+
 uv run python scripts/check_ground_truth.py --labels-dir data/ground_truth/current
 
 uv run python scripts/visualize_ground_truth.py \
