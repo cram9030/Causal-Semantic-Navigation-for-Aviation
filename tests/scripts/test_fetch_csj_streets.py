@@ -84,3 +84,25 @@ def test_main_writes_geojson_feature_collection(tmp_path):
 
     query_url = responses.calls[0].request.url
     assert "geometryType=esriGeometryEnvelope" in query_url
+
+
+@responses.activate
+def test_main_defaults_to_street_centerlines_only(tmp_path):
+    """The Streets layer mixes in other FEATURECLASS values (ramps, alleys, etc.) that can
+    occlude real street centerlines when rasterized - the default --where excludes them
+    unless a caller explicitly asks for everything.
+    """
+    layer_url = f"{SERVICE_URL}/60"
+    responses.add(responses.GET, f"{layer_url}/query", json={"features": []})
+
+    out_path = tmp_path / "streets.geojson"
+    argv = ["fetch_csj_streets.py", "--layer-url", layer_url, "--output", str(out_path)]
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        fcs.main()
+    finally:
+        sys.argv = old_argv
+
+    query_url = responses.calls[0].request.url
+    assert "FEATURECLASS" in query_url and "StreetCenterline" in query_url

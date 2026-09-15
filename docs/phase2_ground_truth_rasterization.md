@@ -176,6 +176,47 @@ exist for catching and diagnosing a mismatch like this in the future
   `WIDTH_FIELD_CANDIDATES`, that's the fix - add the real field name to the
   candidates list in `csnav/data/arcgis/streets.py` and rebuild.
 
+**Resolved**: CSJ's real field is `FOCWIDTH` ("face-of-curb width", i.e.
+curb-to-curb), now first in `WIDTH_FIELD_CANDIDATES`.
+
+### Overlapping/occluding segments
+
+CSJ's `Streets` layer isn't only street centerlines - it mixes in other
+`FEATURECLASS` values (ramps, alleys, driveways, etc., confirmed against the
+live schema) that can sit close enough to a real street to spatially
+overlap it once buffered. `rasterize()` burns overlapping polygons in a
+fixed order (currently: alphabetical by `segment_id`/OBJECTID), and
+whichever one is drawn last **completely overwrites** the earlier one's
+pixels in both the semantic and instance bands - so a real street segment
+can end up with zero pixels of its own, entirely replaced by an unrelated
+feature that happened to overlap it and draw afterward. The symptom looks
+exactly like a data-corruption/indexing bug from the map or gallery alone:
+many visibly-distinct road segments all reporting one single, seemingly
+unrelated OBJECTID, at the default width (since the occluding feature is
+often something the width-field logic has no reason to have a sensible
+width for). It is not an indexing bug - reproduced synthetically with many
+overlapping segments and confirmed the OBJECTID pairing itself stays
+correct throughout `rasterize()`; the overlap and one-sided overwrite is
+real.
+
+**Fix**: filter at the query, not after rasterizing. `params.yaml`'s
+`streets.where` (and `scripts/fetch_csj_streets.py`'s own `--where` default)
+now default to `FEATURECLASS='StreetCenterline'`, so non-street features
+never enter the pinned streets export in the first place - cleaner than
+trying to arbitrate overlaps after the fact, and it means there's nothing
+left to occlude anything with. **This applies to Phase 1 landmark
+manifests too**, not just ground truth: `scripts/build_manifests.py
+--streets-geojson` reads the exact same pinned export, so a manifest built
+before this filter was added can have the same contamination in its
+candidate-road set. Re-fetch (`scripts/fetch_csj_streets.py`, no `--where`
+override needed to get the new default) and rebuild both manifests and
+ground-truth labels from the corrected pull. `check_label`'s "OBJECTID(s)
+never rasterized, occluded by an overlapping segment" warning (and the
+matching entry in `--report`'s JSON) still exists as a safety net for
+genuine remaining overlaps within `StreetCenterline` itself (e.g. divided
+roads digitized as two overlapping centerlines) - it's expected to be rare
+now, not the every-tile occurrence a mixed-feature-class pull produced.
+
 ### Storage format
 
 One 2-band `uint32` GeoTIFF per tile (band 1 semantic class id, band 2

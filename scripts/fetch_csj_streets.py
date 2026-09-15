@@ -14,6 +14,15 @@ This is a one-shot pull for inspecting/caching the dataset locally - it is
 precomputed, per-trajectory-window manifest built in Phase 1) or a live
 per-frame query.
 
+The layer isn't only street centerlines - confirmed against the live schema,
+it mixes in other ``FEATURECLASS`` values (ramps, alleys, driveways, etc.)
+whose geometry can sit close enough to a real street to occlude it when
+later rasterized (see ``docs/phase2_ground_truth_rasterization.md``'s
+"Overlapping/occluding segments" section - this is what a real ground-truth
+build's silently-wrong OBJECTIDs turned out to be). The default
+``--where`` filters to ``FEATURECLASS='StreetCenterline'`` for that reason;
+pass a different ``--where`` to include other feature classes deliberately.
+
 ``--historic-moment`` requests the network as it stood at a past edit moment
 instead of today's - useful for pairing ground-truth labels
 (``scripts/build_ground_truth.py``) with a historic imagery vintage rather
@@ -100,7 +109,11 @@ def main() -> None:
         "--bbox", type=float, nargs=4, default=None, metavar=("MINLON", "MINLAT", "MAXLON", "MAXLAT"),
         help="restrict the query to this EPSG:4326 envelope (default: the whole layer)",
     )
-    parser.add_argument("--where", default="1=1", help="ArcGIS SQL WHERE clause (default: all features)")
+    parser.add_argument(
+        "--where", default="FEATURECLASS='StreetCenterline'",
+        help="ArcGIS SQL WHERE clause (default: street centerlines only, excluding ramps/alleys/etc. "
+        "that share this layer; pass \"1=1\" for every feature class)",
+    )
     parser.add_argument(
         "--historic-moment", default=None,
         help=(
