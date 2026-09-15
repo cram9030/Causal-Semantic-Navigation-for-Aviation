@@ -146,17 +146,22 @@ queries it restricted to `--bbox` (in EPSG:4326; omit `--bbox` to pull the
 whole layer), and writes the results as a GeoJSON `FeatureCollection`.
 Pass `--layer-url` to skip discovery and query a known layer URL directly.
 
-**"Streets" is an ambiguous name in CSJ's catalog** - more than one layer's
-name contains it (a full-attribute streets layer with width/lane fields,
-and a separate, sparser "Street Centerlines" reference/geocoding layer with
-no width field at all), and which one gets resolved by substring match has
-already drifted between sessions with no code change on this side. The
-layer that *is* resolved can also mix in other feature classes (ramps,
-alleys, driveways) that can occlude real streets once rasterized (see
-[`docs/phase2_ground_truth_rasterization.md`](docs/phase2_ground_truth_rasterization.md)).
-Because of that, there is deliberately no filtered `--where` default beyond
-"every feature" - three flags exist to nail down the right layer/field/value
-instead of guessing:
+**"Streets" is an ambiguous name in CSJ's catalog** - 3 layers under
+`OPN/OPN_OpenDataService` match it: `Streets` (`MapServer/60`, the correct
+full-attribute centerlines layer - width, lane, and classification fields;
+see the full schema reference in
+[`docs/phase2_ground_truth_rasterization.md`](docs/phase2_ground_truth_rasterization.md)),
+`Underground Designated Streets` (`MapServer/522`, sparser, no width field
+at all), and `Paving Moratorium Streets` (`MapServer/423`, uncharacterized).
+Which one substring-match discovery resolves to has already drifted between
+sessions with no code change on this side, so `params.yaml`'s
+`streets.layer_url` now pins `MapServer/60` explicitly. The resolved layer
+can also mix in other feature classes (ramps, alleys, driveways) that can
+occlude real streets once rasterized (see that same doc's
+"Overlapping/occluding segments" section). Because which field/value
+actually separates those out isn't confirmed yet, there is deliberately no
+filtered `--where` default beyond "every feature" - three flags exist to
+nail that down instead of guessing:
 
 ```bash
 uv run python scripts/fetch_csj_streets.py --list-layers                          # every candidate layer

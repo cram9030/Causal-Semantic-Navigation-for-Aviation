@@ -43,6 +43,7 @@ stages:
       --root ${streets.root}
       --service-name-contains ${streets.service_name_contains}
       --layer-name-contains ${streets.layer_name_contains}
+      --layer-url "${streets.layer_url}"
       --where "${streets.where}"
       --page-size ${streets.page_size}
     deps:
@@ -58,6 +59,7 @@ stages:
       - streets.root
       - streets.service_name_contains
       - streets.layer_name_contains
+      - streets.layer_url
       - streets.where
       - streets.page_size
     outs:

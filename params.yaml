@@ -36,20 +36,32 @@ streets:
   root: OPN
   service_name_contains: OpenDataService
   layer_name_contains: Streets
-  # "Streets" is an ambiguous name in CSJ's catalog - more than one layer's
-  # name contains it, and which one layer_name_contains/root/
-  # service_name_contains resolve to (via ArcGISCatalog.find_layer's
-  # first-match-wins substring search) has already drifted between sessions
-  # with no change on this side, per docs/phase0_csj_streets_lidar.md's
-  # known-risk note on CSJ's catalog reorganizing. A real ground-truth build
-  # also found the layer mixes in other feature classes (ramps, alleys,
-  # driveways) that can geometrically occlude real streets once rasterized -
-  # see docs/phase2_ground_truth_rasterization.md's "Overlapping/occluding
-  # segments" section. There is deliberately no filtered default here until
-  # the right layer/field/value is reconfirmed: run
-  # `scripts/fetch_csj_streets.py --list-layers`, then `--list-fields` (or
-  # `--distinct-values FIELD`) against the correct one, then set this value
-  # explicitly - don't guess a filter here again.
+  # "Streets" is an ambiguous name in CSJ's catalog - as of this pin,
+  # `--list-layers` finds 3 matches under OPN/OPN_OpenDataService: this one
+  # (`Streets`, MapServer/60 - confirmed the full-attribute centerline layer:
+  # has FOCWIDTH, FEATURECLASS, STREETCLASS/FUNCTCLASS, and its 35,811
+  # records match the City's own Open Data page's reported record count for
+  # this exact layer), `Underground Designated Streets` (MapServer/522 - the
+  # sparser layer a prior session's substring search drifted onto, with no
+  # width field or FEATURECLASS at all), and `Paving Moratorium Streets`
+  # (MapServer/423, uncharacterized - almost certainly not centerlines).
+  # `layer_url` pins the confirmed one explicitly so a future catalog
+  # reorganization can't silently resolve to a different match again (see
+  # docs/phase2_ground_truth_rasterization.md's "'Streets' is an ambiguous
+  # name in CSJ's catalog" section for the full field reference and how this
+  # was confirmed). root/service_name_contains/layer_name_contains are kept
+  # for `--list-layers`/re-discovery if this URL ever needs re-pinning - set
+  # `layer_url: ""` to fall back to substring discovery.
+  layer_url: https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60
+  # Still deliberately "every feature": which coded value(s) of
+  # FEATURECLASS/STREETCLASS/FUNCTCLASS actually correspond to "a real
+  # street centerline" (as opposed to a ramp/alley/driveway/other feature
+  # class sharing this layer) is not yet confirmed - CSJ's REST directory
+  # truncates long coded-value domain lists ("...N more..."), so read the
+  # full, untruncated list with
+  # `scripts/fetch_csj_streets.py --layer-url <the URL above> --list-fields`
+  # (or `--distinct-values FIELD` for a plain string field) before setting
+  # this - don't guess a filter here again.
   where: "1=1"
   page_size: 2000
 

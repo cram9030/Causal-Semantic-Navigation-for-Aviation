@@ -187,13 +187,10 @@ below.
 substring match (`ArcGISCatalog.find_layer`, first match wins) rather than a
 hardcoded service/layer id, per `docs/phase0_csj_streets_lidar.md`'s
 discovery-over-hardcoding rationale - CSJ's catalog has reorganized this
-before. In practice, more than one layer's name contains "Streets": at
-least one full-attribute layer (the one `FOCWIDTH` was confirmed against)
-and a separate, sparser "Street Centerlines" reference/geocoding layer with
-no width field at all (fields limited to things like `OBJECTID`,
-`FACILITYID`, `CENTERLINEID`, `FULLNAME`, `DESIGNATION`, `DESCRIPTION`,
-`NOTES`). Which one `find_layer`'s substring match resolves to has already
-changed between sessions with no code change on this side.
+before. In practice, more than one layer's name under
+`OPN/OPN_OpenDataService` contains "Streets", and which one `find_layer`'s
+substring match resolves to has already changed between sessions with no
+code change on this side.
 
 Three flags on `scripts/fetch_csj_streets.py` exist specifically to pin this
 down deliberately instead of guessing:
@@ -203,15 +200,82 @@ down deliberately instead of guessing:
   candidate is visible at once.
 - `--list-fields` (against a layer pinned with `--layer-url`) prints that
   layer's actual fields - name, type, alias, and every stored code + display
-  label for a coded-value domain field.
+  label for a coded-value domain field, in full (not truncated the way
+  CSJ's own REST HTML directory page abbreviates a long coded-value list as
+  `...N more...`).
 - `--distinct-values FIELD` prints every value a plain string field (no
   coded-value domain to read off from metadata alone - e.g. `DESIGNATION`/
   `DESCRIPTION`) actually contains.
 
-Once the right layer is confirmed, pin it explicitly with `--layer-url`
-(and the equivalent in `params.yaml`, or a `--layer-url`-equivalent
-override) rather than relying on the substring match resolving to the same
-one indefinitely.
+**Resolved**: `--list-layers` finds exactly 3 matches under
+`OPN/OPN_OpenDataService`:
+
+| Layer name | URL | What it is |
+| --- | --- | --- |
+| `Streets` | `.../MapServer/60` | **The correct one.** Full-attribute street centerlines - has `FOCWIDTH`, `FEATURECLASS`, `STREETCLASS`/`FUNCTCLASS`. 35,811 records, matching the City's own [Open Data page for this layer](https://gisdata-csj.opendata.arcgis.com/datasets/CSJ::streets) record count exactly. |
+| `Underground Designated Streets` | `.../MapServer/522` | The sparser layer a prior session's substring search drifted onto - no width field, no `FEATURECLASS`, fields limited to `OBJECTID`/`FACILITYID`/`INTID`/`CENTERLINEID`/`FULLNAME`/`DESIGNATION`/`DESCRIPTION`/`NOTES`/`LASTUPDATE`/`CREATIONDATE`. Not street centerlines in the sense this pipeline needs. |
+| `Paving Moratorium Streets` | `.../MapServer/423` | Uncharacterized beyond its name - almost certainly not centerlines either. |
+
+`params.yaml`'s `streets.layer_url` now pins `.../MapServer/60` explicitly,
+so a future catalog reorganization can't silently resolve to one of the
+other two again.
+
+### Reference: the `Streets` layer schema (MapServer/60)
+
+Recorded here so nobody has to re-derive it from the ArcGIS REST directory
+by hand again. Source:
+`https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60`,
+cross-checked against the City's own
+[Open Data page](https://gisdata-csj.opendata.arcgis.com/datasets/CSJ::streets)
+(35,811 records both places; data last updated 2025-04-28, published
+2020-08-27 as of this writing). Display field: `FULLNAME`. Geometry:
+`esriGeometryPolyline`. `MaxRecordCount`: 2000 (why `CSJStreetsClient`
+paginates). Supports `returnDistinctValues`/`orderByFields`/pagination -
+what `--distinct-values`/`query_distinct_values` rely on.
+
+Coded-value domains below are copied from the REST *HTML* directory view,
+which truncates long lists as `...N more...` - treat the ones marked
+truncated as incomplete and get the full list with
+`--layer-url https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60 --list-fields`
+(that tool reads the untruncated `?f=json` metadata, not this HTML page).
+
+| Field | Type | Alias | Coded values |
+| --- | --- | --- | --- |
+| `OBJECTID` | esriFieldTypeOID | OBJECTID | |
+| `FACILITYID` | esriFieldTypeString(20) | Centerline ID | |
+| `INTID` | esriFieldTypeInteger | Integer ID | |
+| `STREETMASTERID` | esriFieldTypeInteger | Street Master ID | |
+| `FROMINTERID` / `TOINTERID` | esriFieldTypeInteger | From/To Intersection ID | |
+| `FROMLEFT`/`TOLEFT`/`FROMRIGHT`/`TORIGHT` | esriFieldTypeInteger | Left/Right From/To Address | |
+| `ADDRNUMTYPE` | esriFieldTypeString(20) | Address Number Type | `CONTIGUOUS`, `STD EVEN ODD`, `OTHER` (complete) |
+| `FULLNAME` | esriFieldTypeString(125) | Full Street Name | |
+| `ONEWAYDIR` | esriFieldTypeString(10) | One Way Indicator | `P`: From-To, `N`: To-From, `B`: Both (complete) |
+| `MODELFLAG` | esriFieldTypeString(1) | Model Flag | `S`: Single, `M`: Median, `D`: Divided (complete) |
+| `STREETCLASS` | esriFieldTypeString(20) | Street Class | `FY`: Freeway, `HY`: Highway, `EX`: Expressway, **...10 more (truncated)** - renderer symbolizes `EX`/`FY`/`MA`/`MI`/`CO`/`RE` (Expressway/Freeway/Major Arterial/Minor Arterial/Collector/Residential) distinctly, so the remaining ~10 likely include non-arterial classes (alley/ramp/driveway are plausible candidates - **not confirmed**, use `--list-fields` for the untruncated list) |
+| `FUNCTCLASS` | esriFieldTypeString(20) | Functional Class | `AR`: Freeway, `CA`: Highway, `LO`: Residential, **...2 more (truncated)** |
+| `SPEEDLIMIT` | esriFieldTypeSmallInteger | Speed Limit | |
+| `PRIVATE` / `OFFICIAL` / `INCORPORATED` | esriFieldTypeString(3) | Private / Official / Incorporated | `Yes`, `No` (complete) |
+| `MUNILEFT` / `MUNIRIGHT` | esriFieldTypeString(10) | Municipality on Left/Right | `SJ`: San Jose, `SC`: Santa Clara, `MI`: Milpitas, **...17 more (truncated)** |
+| `ZIPLEFT` / `ZIPRIGHT` | esriFieldTypeString(5) | Zip on Left/Right | **...64 more (truncated)** |
+| **`FOCWIDTH`** | esriFieldTypeDouble | **FOC Width** | the confirmed width field (feet; face-of-curb, i.e. curb-to-curb) - see "Fallback roadway width" above |
+| `ROWWIDTH` | esriFieldTypeDouble | ROW Width | right-of-way width (feet) - wider than `FOCWIDTH`, not currently read by `street_width_m` |
+| `FEATURECLASS` | esriFieldTypeString(50) | Feature Class | `AddressPoint`, `CondoParcel`, `Parcel`, **...33 more (truncated)** - a broad domain shared across many CSJ layers, not street-specific; whether a value like `StreetCenterline` is among the 33 more, and whether every row on *this* layer actually carries it (vs. some other value for a ramp/alley/driveway), is **not confirmed** - check with `--distinct-values FEATURECLASS` before filtering on it |
+| `PLANCRT` / `PLANMOD` | esriFieldTypeString(25) | Plan Created/Modified | |
+| `LASTUPDATE` / `CREATIONDATE` | esriFieldTypeDate | Last Update/Creation Date | |
+| `NOTES` | esriFieldTypeString(255) | Notes | |
+| `Shape` / `Shape_Length` | esriFieldTypeGeometry / Double | SHAPE / SHAPE_Length | |
+| `RSN` | esriFieldTypeString(10) | Street RSN | |
+| `PARCELID` | esriFieldTypeString(20) | PARCELID | |
+| `ESNLEFT` / `ESNRIGHT` | esriFieldTypeString(5) | ESNLEFT / ESNRIGHT | |
+| `FHWAFUNCTCLASS` | esriFieldTypeSmallInteger | FHWA Functional Class | `1`: Interstate, `2`: Other Freeway or Expressway, `3`: Other Principal Arterial, **...4 more (truncated)** |
+| `RESPONSIBILITY` | esriFieldTypeString(10) | Responsible Agency | `SJ`: San Jose, `SC`: Santa Clara, `CO`: County, **...11 more (truncated)** |
+
+`STREETCLASS`, `FUNCTCLASS`, and `FEATURECLASS` are the three live
+candidates for the "Overlapping/occluding segments" fix below - whichever
+one cleanly separates real street centerlines from ramps/alleys/driveways
+(if any of them do) is what `streets.where` should filter on, once
+confirmed with `--list-fields`/`--distinct-values` against the untruncated
+metadata rather than this truncated table.
 
 ### Overlapping/occluding segments
 
