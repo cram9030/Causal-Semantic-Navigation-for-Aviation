@@ -136,16 +136,24 @@ Like tube radius (CLAUDE.md core decision 4), this is a swept/versioned input
 (`params.yaml`'s `ground_truth.default_width_m`), never a constant baked into
 `rasterize()`'s call site.
 
-**`WIDTH_FIELD_CANDIDATES` is a guessed lookup list, not a verified CSJ
-schema contract** - it was never confirmed against the live service (this
-codebase's sandbox can't reach `geo.sanjoseca.gov`). If it's missing the
-real field name, *every* road falls back to the flat `default_width_m`, and
-the visible symptom is roads that all render at roughly the same width -
-looking uniformly too narrow (specifically, like the default's "one travel
-lane each way, no parking" - since that's exactly what the default is)
-rather than varying with each street's actual pavement width. This
-happened in practice against a real full-AOI label set. Three tools exist
-specifically to catch and diagnose this:
+**`WIDTH_FIELD_CANDIDATES` started as a guessed lookup list, not a verified
+CSJ schema contract** - none of its original entries were confirmed against
+the live service (this codebase's sandbox can't reach `geo.sanjoseca.gov`).
+While it was missing the real field name, *every* road fell back to the
+flat `default_width_m`, and the visible symptom was roads that all rendered
+at roughly the same width - uniformly too narrow (specifically, like the
+default's "one travel lane each way, no parking", since that's exactly what
+the default is) rather than varying with each street's actual pavement
+width. This happened in practice against a real full-AOI label set, and was
+tracked down to a real, confirmed answer:
+
+**CSJ's actual field is `FOCWIDTH`** ("face-of-curb width" - the curb-to-curb
+width), now listed first in `WIDTH_FIELD_CANDIDATES`. The earlier guessed
+names (`WIDTH`, `ROADWIDTH`, etc.) are kept as fallbacks in case a
+differently-sourced streets layer uses one of them, but for the live CSJ
+`Streets` layer, `FOCWIDTH` is the one that actually matches. Three tools
+exist for catching and diagnosing a mismatch like this in the future
+(a schema change, or a new source layer with yet another field name):
 
 - Every `SegmentInfo` carries the source segment's full raw CSJ
   `attributes` dict, not just this module's `width_m`/`name` interpretation

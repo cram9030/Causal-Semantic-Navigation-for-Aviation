@@ -162,6 +162,18 @@ def test_street_width_m_converts_feet_to_meters():
     assert street_width_m({"WIDTH": 40.0}) == pytest.approx(40.0 * 0.3048)
 
 
+def test_street_width_m_reads_focwidth_the_confirmed_csj_field():
+    """FOCWIDTH ("face-of-curb", i.e. curb-to-curb) is CSJ's actual published width field -
+    confirmed against the live schema after every other candidate here turned out to be a
+    guess that never matched it (see docs/phase2_ground_truth_rasterization.md).
+    """
+    assert street_width_m({"FOCWIDTH": 36.0}) == pytest.approx(36.0 * 0.3048)
+
+
+def test_street_width_m_prefers_focwidth_over_other_candidates():
+    assert street_width_m({"FOCWIDTH": 36.0, "WIDTH": 20.0}) == pytest.approx(36.0 * 0.3048)
+
+
 def test_street_width_m_tries_candidates_in_order():
     assert street_width_m({"ROADWIDTH": 20.0}) == pytest.approx(20.0 * 0.3048)
 

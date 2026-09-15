@@ -32,7 +32,19 @@ OUTPUT_WKID = 4326
 #: Shared by :mod:`csnav.trajectory.manifest_builder` (candidate-road width)
 #: and :mod:`csnav.data.ground_truth.rasterize` (buffer width), so both read
 #: the CSJ schema the same way.
-WIDTH_FIELD_CANDIDATES = ("WIDTH", "Width", "width", "ROADWIDTH", "RoadWidth", "PAVED_WIDTH", "STREETWIDTH")
+#:
+#: ``FOCWIDTH`` ("face-of-curb width", i.e. curb-to-curb) is CSJ's actual
+#: published field, confirmed against the live schema - none of the earlier,
+#: guessed names below ever matched it, so every road silently fell back to
+#: the default width until this was added. It's listed first for that
+#: reason; the rest are kept as fallbacks in case a future schema change (or
+#: a differently-sourced streets layer) uses one of them instead. See
+#: `docs/phase2_ground_truth_rasterization.md`'s "Fallback roadway width"
+#: section for the full story.
+WIDTH_FIELD_CANDIDATES = (
+    "FOCWIDTH", "FocWidth", "focwidth",
+    "WIDTH", "Width", "width", "ROADWIDTH", "RoadWidth", "PAVED_WIDTH", "STREETWIDTH",
+)
 
 #: Field names tried for a human-readable street name, same caveat.
 NAME_FIELD_CANDIDATES = ("STREETNAME", "StreetName", "FULLNAME", "FullName", "NAME", "Name", "name")
