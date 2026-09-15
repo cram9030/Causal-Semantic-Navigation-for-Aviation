@@ -113,13 +113,24 @@ def base_map(center: tuple[float, float], zoom: int = 13, include_imagery: bool 
     overlay, off by default in the layer control - it needs network access to
     ``geo.sanjoseca.gov``, so a map saved for offline review still opens
     cleanly without it.
+
+    Esri World Imagery, not the raw OpenStreetMap tile layer, is the default
+    *active* basemap (``show=True``) - OSM's tile servers are volunteer-run
+    and rate-limit/block automatically on what looks like heavy or automated
+    use (https://osm.wiki/Blocked), which is exactly the profile of a
+    locally-generated HTML file that gets reopened or regenerated often
+    during review (this happened for real against a ground-truth review map:
+    every open fired a fresh burst of tile requests, which got the app
+    blocked). OpenStreetMap is still offered as an opt-in layer in the
+    control for anyone who wants it - one manual toggle is a handful of
+    requests, not a background habit.
     """
     folium = _folium()
     fmap = folium.Map(location=list(center), zoom_start=zoom, tiles=None, control_scale=True)
-    folium.TileLayer("OpenStreetMap", name="OpenStreetMap", show=True).add_to(fmap)
     folium.TileLayer(
-        tiles=_ESRI_WORLD_IMAGERY_URL, attr=_ESRI_ATTRIBUTION, name="Esri World Imagery", show=False
+        tiles=_ESRI_WORLD_IMAGERY_URL, attr=_ESRI_ATTRIBUTION, name="Esri World Imagery", show=True
     ).add_to(fmap)
+    folium.TileLayer("OpenStreetMap", name="OpenStreetMap", show=False).add_to(fmap)
     if include_imagery:
         folium.TileLayer(
             tiles=DPW_IMAGERY_TILE_URL,

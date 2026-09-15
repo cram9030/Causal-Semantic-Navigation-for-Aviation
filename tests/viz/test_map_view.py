@@ -8,6 +8,8 @@ the coverage code says are in view.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from csnav.data.arcgis.tiles import web_mercator_tile_info
@@ -50,6 +52,29 @@ def test_base_map_offers_the_san_jose_imagery_layer():
 def test_base_map_can_omit_the_imagery_layer_for_offline_review():
     html = base_map((37.3382, -121.8863), include_imagery=False).get_root().render()
     assert "geo.sanjoseca.gov" not in html
+
+
+def _is_active_tile_layer(html: str, tile_url_fragment: str) -> bool:
+    """Whether the ``L.tileLayer(...)`` whose URL contains ``tile_url_fragment`` is auto-added to the map.
+
+    folium only emits ``<var>.addTo(<map>)`` right after a layer's own
+    definition when that layer was built with ``show=True`` - a layer added
+    only through the layer control (``show=False``) has no such call.
+    """
+    match = re.search(r'var (tile_layer_\w+) = L\.tileLayer\(\s*"[^"]*' + re.escape(tile_url_fragment), html)
+    assert match, f"no tile layer found for {tile_url_fragment!r}"
+    return f"{match.group(1)}.addTo(" in html
+
+
+def test_base_map_defaults_to_esri_imagery_not_raw_openstreetmap_tiles():
+    """OSM's tile servers block/rate-limit what looks like automated or repeated heavy use
+    (https://osm.wiki/Blocked) - exactly the profile of a locally-generated HTML review map
+    that gets reopened or regenerated often. Esri World Imagery must be the one that loads
+    automatically; OpenStreetMap must stay available but opt-in.
+    """
+    html = base_map((37.3382, -121.8863)).get_root().render()
+    assert _is_active_tile_layer(html, "arcgisonline.com")
+    assert not _is_active_tile_layer(html, "openstreetmap.org")
 
 
 def test_set_map_gives_every_trajectory_its_own_layer(trajectory_set, conops):
