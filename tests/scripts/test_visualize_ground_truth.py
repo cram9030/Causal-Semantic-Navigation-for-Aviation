@@ -118,6 +118,35 @@ def test_visualize_ground_truth_limit_restricts_gallery_tile_count(tmp_path, ima
     assert html.count('"stem":') == 2
 
 
+def test_visualize_ground_truth_gallery_resumes_by_default(tmp_path, imagery_dir, labels_dir, monkeypatch):
+    """A second invocation shouldn't touch PNGs the first one already wrote."""
+    gallery_dir = tmp_path / "gallery"
+    _run(
+        vgt,
+        ["--labels-dir", str(labels_dir), "--imagery-dir", str(imagery_dir), "--gallery-dir", str(gallery_dir)],
+        monkeypatch,
+    )
+    an_image = next((gallery_dir / "images").glob("*_imagery.png"))
+    first_mtime = an_image.stat().st_mtime_ns
+
+    _run(
+        vgt,
+        ["--labels-dir", str(labels_dir), "--imagery-dir", str(imagery_dir), "--gallery-dir", str(gallery_dir)],
+        monkeypatch,
+    )
+    assert an_image.stat().st_mtime_ns == first_mtime
+
+    _run(
+        vgt,
+        [
+            "--labels-dir", str(labels_dir), "--imagery-dir", str(imagery_dir),
+            "--gallery-dir", str(gallery_dir), "--overwrite",
+        ],
+        monkeypatch,
+    )
+    assert an_image.stat().st_mtime_ns > first_mtime
+
+
 def test_visualize_ground_truth_sample_restricts_gallery_tile_count(tmp_path, imagery_dir, labels_dir, monkeypatch):
     gallery_dir = tmp_path / "gallery"
     _run(

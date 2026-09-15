@@ -86,31 +86,32 @@ class GalleryTile:
 
 
 def render_tile_images(
-    label: PanopticLabel, imagery_path: str | Path, output_dir: str | Path, thumbnail_size: int = THUMBNAIL_SIZE
+    label: PanopticLabel,
+    imagery_path: str | Path,
+    output_dir: str | Path,
+    thumbnail_size: int = THUMBNAIL_SIZE,
+    overwrite: bool = False,
 ) -> GalleryTile:
-    """Write one tile's imagery/label/thumbnail PNGs under ``output_dir`` and describe them."""
+    """Write one tile's imagery/label/thumbnail PNGs under ``output_dir`` and describe them.
+
+    ``overwrite=False`` (the default, matching ``scripts/build_ground_truth.py``'s own
+    ``--overwrite`` convention) skips the imagery read and PNG/thumbnail
+    encoding entirely when all three output files already exist, returning
+    the same `GalleryTile` a fresh render would - a resumed run over a very
+    large label set (a full-AOI gallery can mean hundreds of thousands of
+    files) picks up where an interrupted one left off instead of redoing
+    already-finished tiles.
+    """
     output_dir = Path(output_dir)
     images_dir = output_dir / "images"
     thumbs_dir = output_dir / "thumbs"
     images_dir.mkdir(parents=True, exist_ok=True)
     thumbs_dir.mkdir(parents=True, exist_ok=True)
 
-    imagery_rgb = _read_imagery_rgb(Path(imagery_path))
-    imagery_img = Image.fromarray(imagery_rgb, mode="RGB")
-    label_img = Image.fromarray(_label_rgba(label), mode="RGBA")
-
     imagery_rel = f"images/{label.stem}_imagery.png"
     label_rel = f"images/{label.stem}_label.png"
-    imagery_img.save(output_dir / imagery_rel)
-    label_img.save(output_dir / label_rel)
-
-    thumb_label = Image.fromarray(_label_rgba(label, alpha=THUMBNAIL_LABEL_ALPHA), mode="RGBA")
-    blended = Image.alpha_composite(imagery_img.convert("RGBA"), thumb_label).convert("RGB")
-    blended.thumbnail((thumbnail_size, thumbnail_size))
     thumb_rel = f"thumbs/{label.stem}.png"
-    blended.save(output_dir / thumb_rel)
-
-    return GalleryTile(
+    gallery_tile = GalleryTile(
         stem=label.stem,
         road_count=sum(1 for s in label.segments if s.class_id == int(PanopticClass.ROAD)),
         intersection_count=sum(1 for s in label.segments if s.class_id == int(PanopticClass.INTERSECTION)),
@@ -120,6 +121,27 @@ def render_tile_images(
         imagery=imagery_rel,
         label_png=label_rel,
     )
+
+    already_rendered = (
+        (output_dir / imagery_rel).exists()
+        and (output_dir / label_rel).exists()
+        and (output_dir / thumb_rel).exists()
+    )
+    if already_rendered and not overwrite:
+        return gallery_tile
+
+    imagery_rgb = _read_imagery_rgb(Path(imagery_path))
+    imagery_img = Image.fromarray(imagery_rgb, mode="RGB")
+    label_img = Image.fromarray(_label_rgba(label), mode="RGBA")
+    imagery_img.save(output_dir / imagery_rel)
+    label_img.save(output_dir / label_rel)
+
+    thumb_label = Image.fromarray(_label_rgba(label, alpha=THUMBNAIL_LABEL_ALPHA), mode="RGBA")
+    blended = Image.alpha_composite(imagery_img.convert("RGBA"), thumb_label).convert("RGB")
+    blended.thumbnail((thumbnail_size, thumbnail_size))
+    blended.save(output_dir / thumb_rel)
+
+    return gallery_tile
 
 
 def _safe_json(value: object) -> str:
@@ -368,6 +390,7 @@ def build_gallery(
     output_dir: str | Path,
     title: str = "Ground truth QA gallery",
     thumbnail_size: int = THUMBNAIL_SIZE,
+    overwrite: bool = False,
 ) -> Path:
     """Render every tile's images and write the gallery page, in one call.
 
@@ -379,10 +402,15 @@ def build_gallery(
     from disk at a time (see ``scripts/visualize_ground_truth.py``) keeps at
     most one tile's full-resolution rasters in memory regardless of how many
     tiles are in the set.
+
+    ``overwrite=False`` (the default) skips re-rendering a tile whose three
+    output PNGs already exist - a full-AOI gallery can mean hundreds of
+    thousands of files, so being resumable after an interrupted run matters
+    here in a way it wouldn't for a small one.
     """
     output_dir = Path(output_dir)
     tiles = [
-        render_tile_images(label, imagery_path, output_dir, thumbnail_size=thumbnail_size)
+        render_tile_images(label, imagery_path, output_dir, thumbnail_size=thumbnail_size, overwrite=overwrite)
         for label, imagery_path in labels_and_imagery
     ]
     return write_gallery(tiles, output_dir, title=title)

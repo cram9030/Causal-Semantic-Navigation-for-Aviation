@@ -26,10 +26,23 @@ the (much smaller) vectorized map features and per-tile gallery images stay
 around across the whole run.
 
 **Selecting a subset**: pass ``--limit N`` or ``--sample N`` to only process
-part of a large label set - useful for a quick look, or if a full run still
-doesn't fit in available memory even with the one-at-a-time loading above
-(the folium map's own feature list still grows with however many tiles are
-included, since one map needs everything in it at once).
+part of a large label set. A full-AOI label set is easily hundreds of
+thousands of tiles, and two things stop scaling well before raw Python
+memory does even with the one-at-a-time loading above: the review map draws
+everything into *one* map, so its vectorized-feature list still grows with
+however many tiles are included; and the gallery's own ``index.html`` embeds
+one entry (and builds one thumbnail DOM node) per tile, which a browser
+can't render at that count regardless of how the PNGs were generated. Use
+``--manifest <bundle.json>`` on ``scripts/build_ground_truth.py`` to build
+(and then visualize) a much smaller set scoped to one trajectory/scenario's
+actual coverage instead, if what you actually need is a human-reviewable
+sample rather than every training tile.
+
+**Resuming a large gallery run**: the gallery skips re-rendering a tile
+whose three PNGs already exist, so an interrupted run (hundreds of
+thousands of files takes a while) can just be re-invoked with the same
+arguments to pick up where it left off. Pass ``--overwrite`` to force a
+full re-render instead.
 
 Example (whole label set)::
 
@@ -134,6 +147,10 @@ def main() -> None:
         "--sample", type=int, default=None, metavar="N",
         help="only process N tiles, evenly spaced across the sorted label set",
     )
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="re-render gallery images even if they already exist (default: skip and resume)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -145,11 +162,20 @@ def main() -> None:
     all_paths = _sidecar_paths(args.labels_dir)
     paths = _select(all_paths, args.limit, args.sample)
     logger.info("%d label(s) selected from %s (%d total)", len(paths), args.labels_dir, len(all_paths))
-    if args.limit is None and args.sample is None and len(paths) > 500:
+    #: Past this many tiles, both outputs stop being practical regardless of
+    #: Python-side memory: the map's own feature count and the gallery's
+    #: per-tile DOM/file count are what run out next. Not a hard limit -
+    #: just a nudge toward --sample/--manifest before spending the time.
+    LARGE_SELECTION_WARNING_THRESHOLD = 500
+    if args.limit is None and args.sample is None and len(paths) > LARGE_SELECTION_WARNING_THRESHOLD:
         logger.warning(
-            "%d tiles selected with no --limit/--sample - the review map holds every tile's vectorized "
-            "geometry in memory at once, so this is the step most likely to still run out of memory; "
-            "consider --sample N for a representative subset if it does",
+            "%d tiles selected with no --limit/--sample. At this scale: the review map holds every "
+            "tile's vectorized geometry in one map (can still exhaust memory, and no browser can "
+            "usefully render millions of features anyway); the gallery writes 3 files per tile (can "
+            "mean hundreds of thousands of files on disk) and embeds one entry per tile in a single "
+            "HTML page a browser can't render at very large counts either. Consider --sample N for a "
+            "human-reviewable subset, or build/visualize a --manifest-scoped label set instead if you "
+            "want a specific trajectory's coverage rather than every training tile.",
             len(paths),
         )
 
@@ -164,7 +190,9 @@ def main() -> None:
         from csnav.viz.ground_truth_gallery import build_gallery
 
         counts = {"matched": 0, "missing": 0}
-        index = build_gallery(_iter_gallery_pairs(paths, args.imagery_dir, counts), args.gallery_dir)
+        index = build_gallery(
+            _iter_gallery_pairs(paths, args.imagery_dir, counts), args.gallery_dir, overwrite=args.overwrite
+        )
         if counts["matched"] == 0:
             raise SystemExit(f"no label had matching imagery under {args.imagery_dir}")
         logger.info(

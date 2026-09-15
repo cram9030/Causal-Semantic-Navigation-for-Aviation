@@ -66,6 +66,38 @@ def test_build_gallery_writes_index_html_with_embedded_tiles(tmp_path, label, im
     assert label.stem in html
 
 
+def test_render_tile_images_skips_existing_by_default(tmp_path, label, imagery_path, monkeypatch):
+    output_dir = tmp_path / "gallery"
+    render_tile_images(label, imagery_path, output_dir)
+
+    calls = []
+    monkeypatch.setattr(
+        "csnav.viz.ground_truth_gallery._read_imagery_rgb",
+        lambda path: calls.append(path) or np.zeros((4, 4, 3), dtype=np.uint8),
+    )
+    gallery_tile = render_tile_images(label, imagery_path, output_dir)
+
+    assert calls == []  # imagery was never re-read - the existing PNGs were left alone
+    assert gallery_tile.stem == label.stem
+
+
+def test_render_tile_images_overwrite_forces_a_re_render(tmp_path, label, imagery_path, monkeypatch):
+    output_dir = tmp_path / "gallery"
+    render_tile_images(label, imagery_path, output_dir)
+
+    calls = []
+    shape = label.semantic.shape
+
+    def fake_read(path):
+        calls.append(path)
+        return np.zeros((*shape, 3), dtype=np.uint8)
+
+    monkeypatch.setattr("csnav.viz.ground_truth_gallery._read_imagery_rgb", fake_read)
+    render_tile_images(label, imagery_path, output_dir, overwrite=True)
+
+    assert calls == [imagery_path]
+
+
 def test_build_gallery_accepts_a_true_one_shot_generator(tmp_path, label, imagery_path):
     """Regression test: must work with a generator, not just a list/Sequence.
 
