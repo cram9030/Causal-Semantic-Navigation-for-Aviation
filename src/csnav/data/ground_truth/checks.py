@@ -86,9 +86,21 @@ def check_label(label: PanopticLabel) -> TileCheckReport:
     missing = sorted(present_ids - known_ids)
     if missing:
         issues.append(CheckIssue("error", f"instance ids rasterized with no segments_info entry: {missing}"))
-    unused = sorted(known_ids - present_ids)
-    if unused:
-        issues.append(CheckIssue("warning", f"segments_info entries never rasterized (occluded by later draws): {unused}"))
+    unused_ids = known_ids - present_ids
+    if unused_ids:
+        by_instance_id = {segment.instance_id: segment for segment in label.segments}
+        # OBJECTID (segment_id), not the internal instance_id, is what's
+        # actionable for a reviewer going to check this against CSJ's own
+        # data - this fires when two segments' buffers overlap and a later
+        # one in burn order (rasterize()'s draw order) painted entirely over
+        # an earlier one, which silently attributes every shared pixel to
+        # only the winner. Two real CSJ segments overlapping like that is
+        # itself worth a human look (a duplicate/overlapping digitization is
+        # a real possibility, not just a rendering detail).
+        occluded = sorted(by_instance_id[i].segment_id or f"instance {i}" for i in unused_ids)
+        issues.append(
+            CheckIssue("warning", f"OBJECTID(s) never rasterized, occluded by an overlapping segment: {occluded}")
+        )
 
     duplicate_ids = len(label.segments) - len(known_ids)
     if duplicate_ids > 0:

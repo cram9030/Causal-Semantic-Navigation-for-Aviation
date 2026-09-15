@@ -55,6 +55,34 @@ def test_check_label_flags_unused_segment_as_warning(tile, transform):
     assert any(issue.severity == "warning" and "never rasterized" in issue.message for issue in report.issues)
 
 
+def test_check_label_occlusion_warning_names_the_objectid_not_the_instance_id():
+    """A reviewer needs the OBJECTID to go check CSJ's own data for a real overlap/duplicate -
+    the internal instance_id means nothing outside this one label.
+    """
+    import numpy as np
+
+    from csnav.data.arcgis.models import Extent
+    from csnav.trajectory.coverage import TileRef
+
+    tile = TileRef(level=18, row=1, col=1, bounds=Extent(xmin=0.0, ymin=0.0, xmax=0.001, ymax=0.001))
+    from rasterio.transform import from_bounds
+
+    transform = from_bounds(0.0, 0.0, 0.001, 0.001, 8, 8)
+    semantic = np.full((8, 8), int(PanopticClass.ROAD), dtype=np.uint32)
+    instance = np.full((8, 8), 99, dtype=np.uint32)  # only instance 99's pixels survived
+    label = PanopticLabel(
+        tile=tile, semantic=semantic, instance=instance, transform=transform, crs="EPSG:4326",
+        segments=(
+            SegmentInfo(instance_id=1, class_id=int(PanopticClass.ROAD), segment_id="38821"),  # occluded
+            SegmentInfo(instance_id=99, class_id=int(PanopticClass.ROAD), segment_id="56803"),  # won
+        ),
+    )
+    report = check_label(label)
+    occlusion = next(issue for issue in report.issues if "never rasterized" in issue.message)
+    assert "38821" in occlusion.message  # the occluded segment's OBJECTID
+    assert "56803" not in occlusion.message  # the segment that won isn't the one being reported
+
+
 def test_check_label_warns_on_high_default_width_fraction(tile, transform):
     segments = (
         SegmentInfo(instance_id=1, class_id=int(PanopticClass.ROAD), segment_id="1", default_width_used=True),
