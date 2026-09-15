@@ -77,6 +77,6 @@ def test_load_rejects_mismatched_schema_version(tmp_path, tile, transform):
 def test_segment_info_round_trips_through_dict():
     segment = SegmentInfo(
         instance_id=1, class_id=int(PanopticClass.ROAD), segment_id="42", name="Main St",
-        width_m=5.5, default_width_used=True,
+        width_m=5.5, default_width_used=True, attributes={"OBJECTID": 42, "STREETNAME": "Main St", "WIDTH": 18.0},
     )
     assert SegmentInfo.from_dict(segment.to_dict()) == segment

@@ -1,4 +1,11 @@
-from .checks import CheckIssue, LabelSetReport, TileCheckReport, check_label, check_label_directory
+from .checks import (
+    CheckIssue,
+    LabelSetReport,
+    TileCheckReport,
+    check_label,
+    check_label_directory,
+    iter_default_width_segments,
+)
 from .labels import LABEL_SCHEMA_VERSION, PanopticClass, PanopticLabel, SegmentInfo
 from .rasterize import DEFAULT_INTERSECTION_RADIUS_M, DEFAULT_INTERSECTION_SNAP_M, DEFAULT_WIDTH_M, GroundTruthBuilder
 
@@ -16,4 +23,5 @@ __all__ = [
     "LabelSetReport",
     "check_label",
     "check_label_directory",
+    "iter_default_width_segments",
 ]

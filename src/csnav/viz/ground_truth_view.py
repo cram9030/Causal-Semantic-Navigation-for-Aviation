@@ -102,6 +102,21 @@ def _tile_feature(label: PanopticLabel) -> dict[str, Any]:
     }
 
 
+def _format_attributes(attributes: dict[str, Any]) -> str:
+    """Every raw CSJ property for a segment, one ``key: value`` per line, for a tooltip.
+
+    Deliberately the *whole* dict, not just the fields
+    `csnav.data.arcgis.streets.WIDTH_FIELD_CANDIDATES`/`NAME_FIELD_CANDIDATES`
+    happened to match - those are a guessed lookup list, not a verified CSJ
+    schema contract, so a reviewer diagnosing e.g. a suspiciously narrow road
+    needs to see everything CSJ actually published for that ``OBJECTID`` to
+    check whether the real width field just has a different name.
+    """
+    if not attributes:
+        return "(none published)"
+    return "<br>".join(f"{key}: {value}" for key, value in sorted(attributes.items()))
+
+
 def _label_shape_features(label: PanopticLabel) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Road/intersection polygons vectorized out of one label, as GeoJSON Feature dicts.
 
@@ -130,10 +145,11 @@ def _label_shape_features(label: PanopticLabel) -> tuple[list[dict[str, Any]], l
                 "geometry": geometry,
                 "properties": {
                     "tile": label.tile.key,
-                    "segment_id": segment.segment_id or "",
+                    "objectid": segment.segment_id or "",
                     "name": segment.name or "",
                     "width_m": f"{segment.width_m:.1f}" if segment.width_m else "",
                     "default_width": "yes" if segment.default_width_used else "no",
+                    "csj_attributes": _format_attributes(segment.attributes),
                 },
             }
             road_features.append(feature)
@@ -204,8 +220,8 @@ def ground_truth_review_map(labels: Iterable[PanopticLabel]):
     ).add_to(fmap)
     _geojson_layer(
         road_features, "roads", LANDMARK_COLOR,
-        ["name", "segment_id", "width_m", "default_width", "tile"],
-        ["name", "segment", "width (m)", "default width?", "tile"],
+        ["name", "objectid", "width_m", "default_width", "tile", "csj_attributes"],
+        ["name", "OBJECTID", "width (m)", "default width?", "tile", "raw CSJ attributes"],
     ).add_to(fmap)
     _geojson_layer(
         intersection_features, "intersections", INTERSECTION_COLOR,

@@ -56,10 +56,22 @@ class SegmentInfo:
     """Metadata for one non-zero instance id in a label's instance band.
 
     ``segment_id`` is the source `csnav.data.arcgis.streets.StreetSegment`'s
-    id for a ``ROAD`` instance; ``intersection_segment_ids`` are the segment
-    ids meeting there for an ``INTERSECTION`` instance (mirrors
+    id (its CSJ ``OBJECTID``, where the feature published one) for a
+    ``ROAD`` instance; ``intersection_segment_ids`` are the segment ids
+    meeting there for an ``INTERSECTION`` instance (mirrors
     `csnav.trajectory.manifest.ManifestIntersection.segment_ids`). Exactly one
     of the two is populated, matching ``class_id``.
+
+    ``attributes`` is the source segment's raw CSJ feature properties (its
+    entire ``StreetSegment.attributes`` dict) for a ``ROAD`` instance -
+    mirrors `csnav.trajectory.manifest.ManifestLandmark.attributes` for the
+    same reason: ``width_m``/``name`` are only this module's *best guess* at
+    which of CSJ's fields hold the roadway width/street name
+    (`csnav.data.arcgis.streets.WIDTH_FIELD_CANDIDATES`/`NAME_FIELD_CANDIDATES`
+    are a lookup list, not a verified schema contract) - keeping the raw
+    properties alongside that guess is what lets a reviewer confirm or
+    correct it by looking at exactly what CSJ actually published for that
+    ``OBJECTID``, rather than only this module's interpretation of it.
     """
 
     instance_id: int
@@ -69,6 +81,7 @@ class SegmentInfo:
     name: str | None = None
     width_m: float | None = None
     default_width_used: bool = False
+    attributes: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +92,7 @@ class SegmentInfo:
             "name": self.name,
             "width_m": self.width_m,
             "default_width_used": self.default_width_used,
+            "attributes": self.attributes,
         }
 
     @classmethod
@@ -91,6 +105,7 @@ class SegmentInfo:
             name=raw.get("name"),
             width_m=raw.get("width_m"),
             default_width_used=raw.get("default_width_used", False),
+            attributes=raw.get("attributes") or {},
         )
 
 

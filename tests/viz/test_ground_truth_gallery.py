@@ -44,6 +44,21 @@ def test_render_tile_images_writes_expected_files(tmp_path, label, imagery_path)
     assert gallery_tile.default_width_count == sum(1 for s in label.segments if s.default_width_used)
 
 
+def test_render_tile_images_lists_each_road_segment_for_manual_investigation(tmp_path, label, imagery_path):
+    """A reviewer needs the OBJECTID/name/width of every road in a tile to go investigate it
+    against CSJ's own data - not just an aggregate count.
+    """
+    gallery_tile = render_tile_images(label, imagery_path, tmp_path / "gallery")
+
+    road_segments = [s for s in label.segments if s.class_id == 1]
+    assert len(gallery_tile.segments) == len(road_segments)
+    by_objectid = {entry["objectid"]: entry for entry in gallery_tile.segments}
+    for segment in road_segments:
+        entry = by_objectid[segment.segment_id]
+        assert entry["name"] == (segment.name or "")
+        assert entry["default_width"] == segment.default_width_used
+
+
 def test_label_png_is_transparent_where_background(tmp_path, label, imagery_path):
     from PIL import Image
 

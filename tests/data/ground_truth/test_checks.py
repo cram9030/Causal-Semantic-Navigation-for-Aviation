@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from csnav.data.ground_truth.checks import DEFAULT_WIDTH_WARN_FRACTION, check_label, check_label_directory
+from csnav.data.ground_truth.checks import (
+    DEFAULT_WIDTH_WARN_FRACTION,
+    check_label,
+    check_label_directory,
+    iter_default_width_segments,
+)
 from csnav.data.ground_truth.labels import PanopticClass, PanopticLabel, SegmentInfo
 
 
@@ -79,3 +84,38 @@ def test_check_label_directory_over_saved_labels(tmp_path, tile, transform):
     assert result.ok
     assert len(result.tiles) == 1
     assert result.to_dict()["tile_count"] == 1
+
+
+def test_iter_default_width_segments_yields_only_defaulted_roads(tmp_path, tile, transform):
+    semantic = np.zeros((8, 8), dtype=np.uint32)
+    instance = np.zeros((8, 8), dtype=np.uint32)
+    semantic[0:2, 0:2] = int(PanopticClass.ROAD)
+    instance[0:2, 0:2] = 1
+    semantic[4:6, 4:6] = int(PanopticClass.ROAD)
+    instance[4:6, 4:6] = 2
+    label = PanopticLabel(
+        tile=tile, semantic=semantic, instance=instance, transform=transform, crs="EPSG:4326",
+        segments=(
+            SegmentInfo(
+                instance_id=1, class_id=int(PanopticClass.ROAD), segment_id="1", default_width_used=False,
+                attributes={"WIDTH": 40.0},
+            ),
+            SegmentInfo(
+                instance_id=2, class_id=int(PanopticClass.ROAD), segment_id="2", default_width_used=True,
+                attributes={"LANES": 2},
+            ),
+        ),
+    )
+    label.save(tmp_path)
+
+    results = list(iter_default_width_segments(tmp_path))
+    assert len(results) == 1
+    tile_key, segment = results[0]
+    assert tile_key == f"{tile.level}/{tile.row}/{tile.col}"
+    assert segment.segment_id == "2"
+    assert segment.attributes == {"LANES": 2}
+
+
+def test_iter_default_width_segments_skips_missing_rasters(tmp_path):
+    (tmp_path / "18_1_1.json").write_text("{}")
+    assert list(iter_default_width_segments(tmp_path)) == []

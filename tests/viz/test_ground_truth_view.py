@@ -84,6 +84,22 @@ def test_save_ground_truth_map_renders_with_an_empty_layer(tmp_path, label_with_
     assert road_match and int(road_match.group(1)) > 0
 
 
+def test_ground_truth_review_map_surfaces_objectid_and_raw_csj_attributes(label):
+    """A reviewer diagnosing a suspiciously narrow road needs the OBJECTID to go look it up in
+    CSJ's own data, and the raw attributes to check whether the real width field just has a
+    different name than csnav.data.arcgis.streets.WIDTH_FIELD_CANDIDATES guesses.
+    """
+    fmap = ground_truth_review_map([label])
+    html = fmap.get_root().render()
+
+    road_segments = [s for s in label.segments if s.class_id == 1]
+    assert road_segments
+    for segment in road_segments:
+        assert segment.segment_id in html  # the OBJECTID itself
+    assert "OBJECTID" in html  # the tooltip's own label for it
+    assert "WIDTH" in html  # the raw CSJ attribute key, not just our parsed width_m
+
+
 def test_ground_truth_review_map_accepts_a_true_one_shot_generator(label):
     """Regression test: this must work with a generator, not just a list/Sequence.
 

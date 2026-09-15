@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 import rasterio
@@ -83,6 +83,13 @@ class GalleryTile:
     thumb: str
     imagery: str
     label_png: str
+    #: One entry per rasterized road instance - {objectid, name, width_m,
+    #: default_width} - so a reviewer can see exactly which CSJ OBJECTID(s)
+    #: contributed to a tile (and which fell back to the default width)
+    #: without leaving the gallery page. Not included for intersections,
+    #: which have no OBJECTID of their own (they're derived junctions of the
+    #: roads meeting there, already listed here individually).
+    segments: tuple[dict[str, Any], ...] = ()
 
 
 def render_tile_images(
@@ -111,15 +118,25 @@ def render_tile_images(
     imagery_rel = f"images/{label.stem}_imagery.png"
     label_rel = f"images/{label.stem}_label.png"
     thumb_rel = f"thumbs/{label.stem}.png"
+    road_segments = [s for s in label.segments if s.class_id == int(PanopticClass.ROAD)]
     gallery_tile = GalleryTile(
         stem=label.stem,
-        road_count=sum(1 for s in label.segments if s.class_id == int(PanopticClass.ROAD)),
+        road_count=len(road_segments),
         intersection_count=sum(1 for s in label.segments if s.class_id == int(PanopticClass.INTERSECTION)),
         default_width_count=sum(1 for s in label.segments if s.default_width_used),
         total_segments=len(label.segments),
         thumb=thumb_rel,
         imagery=imagery_rel,
         label_png=label_rel,
+        segments=tuple(
+            {
+                "objectid": s.segment_id or "",
+                "name": s.name or "",
+                "width_m": round(s.width_m, 1) if s.width_m else None,
+                "default_width": s.default_width_used,
+            }
+            for s in sorted(road_segments, key=lambda s: s.segment_id or "")
+        ),
     )
 
     already_rendered = (
@@ -234,6 +251,11 @@ body {
 }
 .gt-flag { margin-left: auto; }
 .gt-info { margin-top: 8px; color: #444; }
+.gt-segments-wrap { max-height: 220px; overflow-y: auto; margin-top: 6px; border: 1px solid #eee; border-radius: 4px; }
+.gt-segments { border-collapse: collapse; width: 100%; font-size: 12px; }
+.gt-segments th, .gt-segments td { text-align: left; padding: 2px 6px; border-bottom: 1px solid #eee; }
+.gt-segments thead th { position: sticky; top: 0; background: #fafafa; }
+.gt-segments tr.gt-default-width { background: #fff4e5; }
 .gt-grid {
   flex: 3; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 8px; max-height: 82vh; overflow-y: auto; padding: 4px;
@@ -290,14 +312,36 @@ _SCRIPT = """
     return grid.children[index];
   }
 
+  function escapeHtml(value) {
+    var entities = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+    return String(value).replace(/[&<>"']/g, function (ch) { return entities[ch]; });
+  }
+
+  function segmentRows(segments) {
+    return (segments || []).map(function (seg) {
+      return '<tr' + (seg.default_width ? ' class="gt-default-width"' : '') + '>' +
+        '<td>' + escapeHtml(seg.objectid) + '</td>' +
+        '<td>' + escapeHtml(seg.name || '(unnamed)') + '</td>' +
+        '<td>' + (seg.width_m != null ? seg.width_m + ' m' : '—') + '</td>' +
+        '<td>' + (seg.default_width ? 'yes' : 'no') + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
   function render() {
     var tile = TILES[current];
     imageryEl.src = tile.imagery;
     labelEl.src = tile.label_png;
     positionEl.textContent = (current + 1) + ' / ' + TILES.length;
-    infoEl.textContent = tile.stem + ' - ' + tile.road_count + ' road instance(s), ' +
+    var summary = tile.stem + ' - ' + tile.road_count + ' road instance(s), ' +
       tile.intersection_count + ' intersection(s)' +
       (tile.default_width_count ? ', ' + tile.default_width_count + ' using the default width' : '');
+    var rows = segmentRows(tile.segments);
+    infoEl.innerHTML = '<div>' + escapeHtml(summary) + '</div>' + (rows
+      ? '<div class="gt-segments-wrap"><table class="gt-segments"><thead><tr><th>OBJECTID</th>' +
+        '<th>name</th><th>width</th><th>default width?</th></tr></thead><tbody>' + rows +
+        '</tbody></table></div>'
+      : '');
     flagBox.checked = !!flags[tile.stem];
     for (var i = 0; i < grid.children.length; i++) {
       grid.children[i].classList.toggle('current', i === current);

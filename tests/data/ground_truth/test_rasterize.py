@@ -37,6 +37,12 @@ def test_rasterize_two_crossing_streets_produces_road_and_intersection(tile, tra
     assert by_id["2"].default_width_used is True
     assert by_id["2"].width_m == pytest.approx(builder.default_width_m)
 
+    # The raw CSJ attributes ride along too - a reviewer diagnosing a width
+    # discrepancy needs to see exactly what CSJ published, not just this
+    # module's WIDTH_FIELD_CANDIDATES-based interpretation of it.
+    assert by_id["1"].attributes == {"WIDTH": 40.0, "STREETNAME": "First St"}
+    assert by_id["2"].attributes == {}
+
 
 def test_rasterize_no_streets_in_tile_is_all_background(tile, transform):
     builder = GroundTruthBuilder()

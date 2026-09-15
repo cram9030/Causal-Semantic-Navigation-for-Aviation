@@ -77,6 +77,7 @@ class _RoadMeta:
     name: str | None
     width_m: float
     default_width_used: bool
+    attributes: dict[str, Any]
 
 
 def _add_to_cluster(
@@ -198,6 +199,7 @@ class GroundTruthBuilder:
                     name=street_name(segment.attributes),
                     width_m=self.default_width_m if default_used else raw_width,
                     default_width_used=default_used,
+                    attributes=dict(segment.attributes),
                 )
             )
 
@@ -225,6 +227,7 @@ class GroundTruthBuilder:
                     name=meta.name,
                     width_m=meta.width_m,
                     default_width_used=meta.default_width_used,
+                    attributes=meta.attributes,
                 )
             )
 

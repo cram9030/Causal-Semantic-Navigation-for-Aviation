@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import sys
 from pathlib import Path
@@ -62,3 +63,29 @@ def test_check_ground_truth_exits_nonzero_on_error(tmp_path, monkeypatch):
 
 def test_check_ground_truth_warns_without_failing_on_empty_directory(tmp_path, monkeypatch, caplog):
     _run(["--labels-dir", str(tmp_path)], monkeypatch)  # no labels present, not an error
+
+
+def test_check_ground_truth_default_width_report_lists_objectid_and_raw_attributes(tmp_path, monkeypatch):
+    label = PanopticLabel(
+        tile=TileRef(level=18, row=3, col=3, bounds=Extent(xmin=0.0, ymin=0.0, xmax=0.001, ymax=0.001)),
+        semantic=np.full((8, 8), int(PanopticClass.ROAD), dtype=np.uint32),
+        instance=np.full((8, 8), 1, dtype=np.uint32),
+        transform=from_bounds(0.0, 0.0, 0.001, 0.001, 8, 8),
+        crs="EPSG:4326",
+        segments=(
+            SegmentInfo(
+                instance_id=1, class_id=int(PanopticClass.ROAD), segment_id="7", name="Elm St",
+                default_width_used=True, attributes={"LANES": 2},
+            ),
+        ),
+    )
+    label.save(tmp_path)
+
+    report_path = tmp_path / "defaults.csv"
+    _run(["--labels-dir", str(tmp_path), "--default-width-report", str(report_path)], monkeypatch)
+
+    rows = list(csv.DictReader(report_path.open()))
+    assert len(rows) == 1
+    assert rows[0]["objectid"] == "7"
+    assert rows[0]["name"] == "Elm St"
+    assert json.loads(rows[0]["attributes"]) == {"LANES": 2}

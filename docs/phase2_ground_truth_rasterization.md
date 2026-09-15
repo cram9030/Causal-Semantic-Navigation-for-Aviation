@@ -136,6 +136,38 @@ Like tube radius (CLAUDE.md core decision 4), this is a swept/versioned input
 (`params.yaml`'s `ground_truth.default_width_m`), never a constant baked into
 `rasterize()`'s call site.
 
+**`WIDTH_FIELD_CANDIDATES` is a guessed lookup list, not a verified CSJ
+schema contract** - it was never confirmed against the live service (this
+codebase's sandbox can't reach `geo.sanjoseca.gov`). If it's missing the
+real field name, *every* road falls back to the flat `default_width_m`, and
+the visible symptom is roads that all render at roughly the same width -
+looking uniformly too narrow (specifically, like the default's "one travel
+lane each way, no parking" - since that's exactly what the default is)
+rather than varying with each street's actual pavement width. This
+happened in practice against a real full-AOI label set. Three tools exist
+specifically to catch and diagnose this:
+
+- Every `SegmentInfo` carries the source segment's full raw CSJ
+  `attributes` dict, not just this module's `width_m`/`name` interpretation
+  of it - so it's always possible to see exactly what CSJ published for a
+  given `OBJECTID`, independent of whether `WIDTH_FIELD_CANDIDATES`
+  happened to match it.
+- The folium review map's road tooltips show the OBJECTID and every raw CSJ
+  attribute for that segment (`csnav.viz.ground_truth_view`), and the
+  gallery's per-tile info panel lists every road instance's OBJECTID, name,
+  width, and default-width flag as a small table
+  (`csnav.viz.ground_truth_gallery`) - both let a reviewer go straight from
+  "this looks wrong" to "here's the exact OBJECTID and what CSJ says about
+  it" without leaving the page.
+- `scripts/check_ground_truth.py --default-width-report out.csv` streams a
+  CSV of every OBJECTID/name/raw-attributes that fell back to the default,
+  across the whole label set (one pass, one row per segment - safe at
+  full-AOI scale) - the fastest way to confirm the hypothesis: if that CSV
+  is nearly the whole dataset, and its `attributes` column consistently
+  shows *some* width-shaped field under a name not in
+  `WIDTH_FIELD_CANDIDATES`, that's the fix - add the real field name to the
+  candidates list in `csnav/data/arcgis/streets.py` and rebuild.
+
 ### Storage format
 
 One 2-band `uint32` GeoTIFF per tile (band 1 semantic class id, band 2

@@ -19,12 +19,13 @@ good as the geometry Mask2Former is being fit against).
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from csnav.data.ground_truth.labels import PanopticClass, PanopticLabel
+from csnav.data.ground_truth.labels import PanopticClass, PanopticLabel, SegmentInfo
 
 
 @dataclass(frozen=True)
@@ -193,3 +194,28 @@ def check_label_directory(labels_dir: str | Path) -> LabelSetReport:
         label = PanopticLabel.load(raster_path, sidecar)
         reports.append(check_label(label))
     return LabelSetReport(tiles=tuple(reports))
+
+
+def iter_default_width_segments(labels_dir: str | Path) -> Iterator[tuple[str, SegmentInfo]]:
+    """Yield ``(tile_key, segment)`` for every road that fell back to the default width.
+
+    A single-pass generator, not a list - a full-AOI label set is hundreds
+    of thousands of tiles (CLAUDE.md's "never materialize the full per-tile
+    dataset" rule), and this is meant to feed a streaming export
+    (``scripts/check_ground_truth.py --default-width-report``) rather than
+    build one large in-memory result. Each `SegmentInfo` carries the raw CSJ
+    ``attributes`` it was rasterized from, which is the actual point: this is
+    the reviewable list of OBJECTIDs to go check against CSJ's own data when
+    `csnav.data.arcgis.streets.WIDTH_FIELD_CANDIDATES` might be missing the
+    real width field.
+    """
+    labels_dir = Path(labels_dir)
+    for sidecar in sorted(labels_dir.glob("*.json")):
+        raster_path = sidecar.with_suffix(".tif")
+        if not raster_path.exists():
+            continue
+        label = PanopticLabel.load(raster_path, sidecar)
+        tile_key = f"{label.tile.level}/{label.tile.row}/{label.tile.col}"
+        for segment in label.segments:
+            if segment.class_id == int(PanopticClass.ROAD) and segment.default_width_used:
+                yield tile_key, segment

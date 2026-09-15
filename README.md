@@ -492,14 +492,21 @@ uv run python scripts/visualize_ground_truth.py \
 raster actually matches its own JSON sidecar (shape, every instance id
 accounted for, no orphan pixels) and reports the default-width fallback
 rate per tile, exiting non-zero on any structural error - usable as a CI
-gate on `build_ground_truth`'s output.
+gate on `build_ground_truth`'s output. Add `--default-width-report out.csv`
+to stream a CSV of every OBJECTID/name/raw-CSJ-attributes that fell back to
+`ground_truth.default_width_m` instead of a published width - if roads are
+rendering suspiciously uniform and narrow, this is the tool to find out
+whether `csnav.data.arcgis.streets.WIDTH_FIELD_CANDIDATES` is simply
+missing the real field name in CSJ's live schema (the CSV's `attributes`
+column shows exactly what CSJ published for that segment).
 
 `visualize_ground_truth.py` is for a person to look at the result:
 
 - **the review map** (`--map`) draws every tile's footprint plus its
   road/intersection polygons - vectorized straight back out of the label
   rasters, so it shows exactly what a training loader would read - over San
-  Jose imagery, toggleable by layer.
+  Jose imagery, toggleable by layer. Road tooltips show the OBJECTID, name,
+  computed width, and every raw CSJ attribute for that segment.
 - **the QA gallery** (`--gallery-dir`) is a self-contained static HTML page
   built for paging through *every* tile quickly: a thumbnail grid drives a
   large viewer with two pixel-aligned images (imagery, and a transparent
@@ -508,7 +515,10 @@ gate on `build_ground_truth`'s output.
   render - with arrow-key navigation and a per-tile "flag" checkbox
   (persisted in the page's own `localStorage`, exportable as a plain text
   list) for marking tiles worth a second look while moving through a large
-  set.
+  set. The info panel below the viewer lists every road instance in the
+  current tile - OBJECTID, name, computed width, whether it fell back to
+  the default width - so going from "this tile looks off" to "here's the
+  OBJECTID to go check" never needs the map open at the same time.
 
 Labels are loaded from disk **one tile at a time**, never the whole label
 set at once - a full-AOI run is hundreds of tiles, each carrying two
