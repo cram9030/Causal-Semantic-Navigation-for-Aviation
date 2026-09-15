@@ -146,6 +146,21 @@ queries it restricted to `--bbox` (in EPSG:4326; omit `--bbox` to pull the
 whole layer), and writes the results as a GeoJSON `FeatureCollection`.
 Pass `--layer-url` to skip discovery and query a known layer URL directly.
 
+The default `--where` filters to `FEATURECLASS='StreetCenterline'` - the
+layer mixes in other feature classes (ramps, alleys, driveways) that can
+occlude real streets once rasterized (see
+[`docs/phase2_ground_truth_rasterization.md`](docs/phase2_ground_truth_rasterization.md)).
+That field/value is schema-specific and can be wrong for a layer this
+resolves to at a different time (a coded-value domain field in particular
+often needs the *stored* code, not the human-readable label). If `--where`
+fails with an ArcGIS query error, run `--list-fields` first - it prints
+every field this layer actually has, and every valid stored code + display
+label for a coded-value domain field, without querying or writing anything:
+
+```bash
+uv run python scripts/fetch_csj_streets.py --list-fields
+```
+
 ### Fetching ground elevation
 
 Ground elevation ends up sourced from USGS's 3D Elevation Program (3DEP)

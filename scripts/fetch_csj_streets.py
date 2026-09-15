@@ -14,14 +14,25 @@ This is a one-shot pull for inspecting/caching the dataset locally - it is
 precomputed, per-trajectory-window manifest built in Phase 1) or a live
 per-frame query.
 
-The layer isn't only street centerlines - confirmed against the live schema,
-it mixes in other ``FEATURECLASS`` values (ramps, alleys, driveways, etc.)
-whose geometry can sit close enough to a real street to occlude it when
-later rasterized (see ``docs/phase2_ground_truth_rasterization.md``'s
-"Overlapping/occluding segments" section - this is what a real ground-truth
-build's silently-wrong OBJECTIDs turned out to be). The default
-``--where`` filters to ``FEATURECLASS='StreetCenterline'`` for that reason;
-pass a different ``--where`` to include other feature classes deliberately.
+The layer isn't only street centerlines - confirmed against the live schema
+at the time of writing, it mixes in other feature classes (ramps, alleys,
+driveways, etc.) whose geometry can sit close enough to a real street to
+occlude it when later rasterized (see
+``docs/phase2_ground_truth_rasterization.md``'s "Overlapping/occluding
+segments" section - this is what a real ground-truth build's silently-wrong
+OBJECTIDs turned out to be). The default ``--where`` filters to
+``FEATURECLASS='StreetCenterline'`` for that reason. **This is schema-
+specific and the exact field/value can change** (a different layer ID than
+the one this was confirmed against, a coded-value domain field where the
+stored value isn't the human-readable label, a schema update) - if
+``--where`` fails with an ArcGIS query error, run with ``--list-fields``
+first to print every field this layer actually has (name, type, and, for a
+coded-value domain field, every valid stored code and its display label),
+rather than guessing again.
+
+Example (find the right field/value after a query error)::
+
+    uv run python scripts/fetch_csj_streets.py --list-fields
 
 ``--historic-moment`` requests the network as it stood at a past edit moment
 instead of today's - useful for pairing ground-truth labels
@@ -82,6 +93,35 @@ def resolve_layer_url(args: argparse.Namespace) -> str:
     return layer_url
 
 
+def print_fields(metadata: dict) -> None:
+    """Print every field this layer has - name, type, alias, and (for a coded-value domain
+    field) every valid stored code with its display label.
+
+    The direct fix for a ``--where`` clause that fails with an ArcGIS query
+    error: the field name may not exist on this layer, or the field may be a
+    coded-value domain where the SQL comparison must use the *stored* code
+    (often a short integer/string), not the human-readable label a person
+    would use to describe it (e.g. matching a UI dropdown's display text
+    like "Street Centerline" against the field fails if the layer actually
+    stores a code like ``1`` or ``"SC"`` for that value).
+    """
+    fields = metadata.get("fields") or []
+    if not fields:
+        print("(no field metadata returned by this layer)")
+        return
+    for field in fields:
+        name = field.get("name")
+        line = f"{name} ({field.get('type')})"
+        alias = field.get("alias")
+        if alias and alias != name:
+            line += f" alias={alias!r}"
+        print(line)
+        domain = field.get("domain") or {}
+        if domain.get("type") == "codedValue":
+            for coded_value in domain.get("codedValues", []):
+                print(f"    stored value {coded_value.get('code')!r} -> {coded_value.get('name')!r}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="ArcGIS REST services directory root")
@@ -122,8 +162,16 @@ def main() -> None:
             "(unconfirmed; see the module docstring). Omit for the current network."
         ),
     )
-    parser.add_argument("--output", type=Path, required=True, help="output .geojson path")
+    parser.add_argument(
+        "--output", type=Path, required=False,
+        help="output .geojson path (not needed with --list-fields)",
+    )
     parser.add_argument("--page-size", type=int, default=2000)
+    parser.add_argument(
+        "--list-fields", action="store_true",
+        help="print this layer's field names/types/coded-value domains and exit, without querying "
+        "or writing anything - use this to find the right --where field/value after a query error",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -131,6 +179,13 @@ def main() -> None:
 
     layer_url = resolve_layer_url(args)
     client = CSJStreetsClient(layer_url, page_size=args.page_size)
+
+    if args.list_fields:
+        print_fields(client.get_metadata())
+        return
+
+    if args.output is None:
+        raise SystemExit("--output is required (unless --list-fields)")
 
     bbox = None
     if args.bbox:

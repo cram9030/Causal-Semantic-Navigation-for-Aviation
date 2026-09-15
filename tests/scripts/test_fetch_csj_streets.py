@@ -106,3 +106,55 @@ def test_main_defaults_to_street_centerlines_only(tmp_path):
 
     query_url = responses.calls[0].request.url
     assert "FEATURECLASS" in query_url and "StreetCenterline" in query_url
+
+
+@responses.activate
+def test_list_fields_prints_names_types_and_coded_values(capsys):
+    layer_url = f"{SERVICE_URL}/60"
+    responses.add(
+        responses.GET, layer_url,
+        json={
+            "fields": [
+                {"name": "OBJECTID", "type": "esriFieldTypeOID", "alias": "OBJECTID"},
+                {
+                    "name": "FEATURECLASS", "type": "esriFieldTypeSmallInteger", "alias": "Feature Class",
+                    "domain": {
+                        "type": "codedValue",
+                        "codedValues": [
+                            {"code": 1, "name": "Street Centerline"},
+                            {"code": 2, "name": "Alley"},
+                        ],
+                    },
+                },
+            ]
+        },
+    )
+
+    argv = ["fetch_csj_streets.py", "--layer-url", layer_url, "--list-fields"]
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        fcs.main()
+    finally:
+        sys.argv = old_argv
+
+    out = capsys.readouterr().out
+    assert "FEATURECLASS" in out
+    assert "Feature Class" in out
+    assert "1" in out and "Street Centerline" in out
+    assert "2" in out and "Alley" in out
+    assert not responses.calls[-1].request.url.endswith("/query")  # no query was ever issued
+
+
+@responses.activate
+def test_list_fields_does_not_require_output(capsys):
+    layer_url = f"{SERVICE_URL}/60"
+    responses.add(responses.GET, layer_url, json={"fields": []})
+
+    argv = ["fetch_csj_streets.py", "--layer-url", layer_url, "--list-fields"]
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        fcs.main()  # must not raise for missing --output
+    finally:
+        sys.argv = old_argv
