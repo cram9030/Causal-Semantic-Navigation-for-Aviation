@@ -5,6 +5,16 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# The Claude Code config dir (CLAUDE_CONFIG_DIR, set in devcontainer.json) is
+# bind-mounted from a named volume so auth/settings/history survive rebuilds.
+# A brand-new volume (e.g. after devcontainerId changes) is seeded root:root
+# by Docker if nothing pre-exists at that path in the image, which blocks the
+# non-root vscode user from writing to it at all (EACCES on every write,
+# including the very first one, so login "succeeds" but never persists).
+# Re-asserting ownership here runs after the volume is mounted and is a
+# no-op on an already-correct volume, so it self-heals on every rebuild.
+sudo chown -R "$(id -u):$(id -g)" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
 # `dev`  - test/lint tooling (pytest, responses)
 # `viz`  - Phase 1 visualization (matplotlib, folium); the trajectory/tube/
 #          manifest figures and maps, and the tests that render them
