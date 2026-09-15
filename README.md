@@ -155,13 +155,14 @@ see the full schema reference in
 at all), and `Paving Moratorium Streets` (`MapServer/423`, uncharacterized).
 Which one substring-match discovery resolves to has already drifted between
 sessions with no code change on this side, so `params.yaml`'s
-`streets.layer_url` now pins `MapServer/60` explicitly. The resolved layer
-can also mix in other feature classes (ramps, alleys, driveways) that can
-occlude real streets once rasterized (see that same doc's
-"Overlapping/occluding segments" section). Because which field/value
-actually separates those out isn't confirmed yet, there is deliberately no
-filtered `--where` default beyond "every feature" - three flags exist to
-nail that down instead of guessing:
+`streets.layer_url` now pins `MapServer/60` explicitly. That layer also
+mixes in non-street features (sanitary-sewer/storm-water infrastructure
+lines) under other `FEATURECLASS` values, which can occlude real streets
+once rasterized (see that same doc's "Overlapping/occluding segments"
+section) - `params.yaml`'s `streets.where` now pins
+`FEATURECLASS='StreetCenterline'` to exclude them. If a future pull ever
+needs re-pinning (a catalog reorganization, a schema change), three flags
+exist to nail the layer/field/value down again instead of guessing:
 
 ```bash
 uv run python scripts/fetch_csj_streets.py --list-layers                          # every candidate layer

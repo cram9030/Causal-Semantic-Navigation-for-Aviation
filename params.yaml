@@ -53,16 +53,21 @@ streets:
   # for `--list-layers`/re-discovery if this URL ever needs re-pinning - set
   # `layer_url: ""` to fall back to substring discovery.
   layer_url: https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60
-  # Still deliberately "every feature": which coded value(s) of
-  # FEATURECLASS/STREETCLASS/FUNCTCLASS actually correspond to "a real
-  # street centerline" (as opposed to a ramp/alley/driveway/other feature
-  # class sharing this layer) is not yet confirmed - CSJ's REST directory
-  # truncates long coded-value domain lists ("...N more..."), so read the
-  # full, untruncated list with
-  # `scripts/fetch_csj_streets.py --layer-url <the URL above> --list-fields`
-  # (or `--distinct-values FIELD` for a plain string field) before setting
-  # this - don't guess a filter here again.
-  where: "1=1"
+  # Resolved: `FEATURECLASS='StreetCenterline'` is the confirmed filter -
+  # `--list-fields` against MapServer/60's untruncated metadata shows
+  # FEATURECLASS is a citywide shared domain (also covers sewer/storm-water
+  # infrastructure like `ssGravityMain`/`swPressurizedMain`, parcels,
+  # address points, etc. - `StreetCenterline` is one value among 35), not a
+  # street-specific one. Non-street utility lines under other FEATURECLASS
+  # values can run parallel/close to real streets, which is exactly the
+  # kind of geometry that occluded a real street's pixels in
+  # docs/phase2_ground_truth_rasterization.md's "Overlapping/occluding
+  # segments" incident - filtering to `StreetCenterline` here removes them
+  # at the source. (`STREETCLASS`/`FUNCTCLASS` are a different axis - they
+  # classify *within* `StreetCenterline`, e.g. `AL`: Alley, `DW`: Driveway,
+  # `RA`: Ramp are still legitimate street centerlines, not something to
+  # filter out here.)
+  where: "FEATURECLASS='StreetCenterline'"
   page_size: 2000
 
 lidar:

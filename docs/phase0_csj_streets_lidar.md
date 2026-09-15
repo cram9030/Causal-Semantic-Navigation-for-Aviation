@@ -176,28 +176,29 @@ how this maps onto the originally-sketched module layout.
 - The layer isn't only street centerlines - a real ground-truth build found
   non-street features occluding real streets once rasterized (see
   `docs/phase2_ground_truth_rasterization.md`'s "Overlapping/occluding
-  segments" section). **`FEATURECLASS` alone is not a reliable fix for
-  this**: it exists on some "Streets"-named layers in CSJ's catalog but not
-  others (`ArcGISCatalog.find_layer`'s first-match-wins substring search has
-  already resolved to a different layer between sessions with no change on
-  this side), and a `FEATURECLASS` filter that happened to work against one
-  such layer produced an ArcGIS 400 query error against another. That
-  ambiguity is now resolved: `params.yaml`'s `streets.layer_url` pins the
-  confirmed full-attribute layer explicitly
-  (`.../OPN_OpenDataService/MapServer/60`, not the sparser `Underground
-  Designated Streets`/`Paving Moratorium Streets` layers that also match the
-  "Streets" substring), and its full field list - including `FEATURECLASS`,
-  `STREETCLASS`, and `FUNCTCLASS` as the three live candidates for a
-  street-vs-non-street filter - is recorded in
-  `docs/phase2_ground_truth_rasterization.md`'s "Reference: the `Streets`
-  layer schema (MapServer/60)" section. This client itself stays
-  schema-agnostic (`where` defaults to `"1=1"`); so does
-  `scripts/fetch_csj_streets.py`'s own `--where` default and `params.yaml`'s
-  `streets.where` - deliberately, until which of those three fields (and
-  which of their values) actually separates real centerlines from
-  ramps/alleys/driveways is confirmed via
-  `--list-layers`/`--list-fields`/`--distinct-values` (see that same phase2
-  doc section for the workflow).
+  segments" section). Two ambiguities had to be resolved before a filter
+  could be trusted: *which layer* (`FEATURECLASS` exists on some
+  "Streets"-named layers in CSJ's catalog but not others -
+  `ArcGISCatalog.find_layer`'s first-match-wins substring search had
+  resolved to a different layer between sessions with no change on this
+  side, and a `FEATURECLASS` filter that worked against one such layer
+  produced an ArcGIS 400 query error against another), and *which field*
+  (`STREETCLASS`/`FUNCTCLASS` looked like plausible candidates too, but
+  classify street sub-types like alley/driveway/ramp rather than
+  separating streets from non-street features). Both are now resolved:
+  `params.yaml`'s `streets.layer_url` pins the confirmed full-attribute
+  layer explicitly (`.../OPN_OpenDataService/MapServer/60`, not the sparser
+  `Underground Designated Streets`/`Paving Moratorium Streets` layers that
+  also match the "Streets" substring), and `streets.where` pins
+  `FEATURECLASS='StreetCenterline'` - the field/value that actually
+  excludes the sanitary-sewer/storm-water infrastructure lines this layer
+  also carries under other `FEATURECLASS` values. Full field/coded-value
+  reference in `docs/phase2_ground_truth_rasterization.md`'s "Reference:
+  the `Streets` layer schema (MapServer/60)" section. This client itself
+  stays schema-agnostic (`where` defaults to `"1=1"`) - the filter lives in
+  `params.yaml`/`scripts/fetch_csj_streets.py`'s CLI, not baked into the
+  client, since a different `--layer-url` could resolve to a layer with a
+  different schema entirely.
 
 ## `LidarElevationClient`
 

@@ -233,11 +233,14 @@ cross-checked against the City's own
 paginates). Supports `returnDistinctValues`/`orderByFields`/pagination -
 what `--distinct-values`/`query_distinct_values` rely on.
 
-Coded-value domains below are copied from the REST *HTML* directory view,
-which truncates long lists as `...N more...` - treat the ones marked
-truncated as incomplete and get the full list with
+Coded-value domains were first captured from the REST *HTML* directory
+view, which truncates long lists as `...N more...`; the table below has
+since been filled in with the untruncated lists from
 `--layer-url https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60 --list-fields`
-(that tool reads the untruncated `?f=json` metadata, not this HTML page).
+(that tool reads the `?f=json` metadata, not the HTML page) - long
+municipality/zip-code lists are still summarized rather than spelled out in
+full here, since they aren't relevant to any filtering decision this
+pipeline makes.
 
 | Field | Type | Alias | Coded values |
 | --- | --- | --- | --- |
@@ -247,19 +250,19 @@ truncated as incomplete and get the full list with
 | `STREETMASTERID` | esriFieldTypeInteger | Street Master ID | |
 | `FROMINTERID` / `TOINTERID` | esriFieldTypeInteger | From/To Intersection ID | |
 | `FROMLEFT`/`TOLEFT`/`FROMRIGHT`/`TORIGHT` | esriFieldTypeInteger | Left/Right From/To Address | |
-| `ADDRNUMTYPE` | esriFieldTypeString(20) | Address Number Type | `CONTIGUOUS`, `STD EVEN ODD`, `OTHER` (complete) |
+| `ADDRNUMTYPE` | esriFieldTypeString(20) | Address Number Type | `CONTIGUOUS`, `STD EVEN ODD`, `OTHER` |
 | `FULLNAME` | esriFieldTypeString(125) | Full Street Name | |
-| `ONEWAYDIR` | esriFieldTypeString(10) | One Way Indicator | `P`: From-To, `N`: To-From, `B`: Both (complete) |
-| `MODELFLAG` | esriFieldTypeString(1) | Model Flag | `S`: Single, `M`: Median, `D`: Divided (complete) |
-| `STREETCLASS` | esriFieldTypeString(20) | Street Class | `FY`: Freeway, `HY`: Highway, `EX`: Expressway, **...10 more (truncated)** - renderer symbolizes `EX`/`FY`/`MA`/`MI`/`CO`/`RE` (Expressway/Freeway/Major Arterial/Minor Arterial/Collector/Residential) distinctly, so the remaining ~10 likely include non-arterial classes (alley/ramp/driveway are plausible candidates - **not confirmed**, use `--list-fields` for the untruncated list) |
-| `FUNCTCLASS` | esriFieldTypeString(20) | Functional Class | `AR`: Freeway, `CA`: Highway, `LO`: Residential, **...2 more (truncated)** |
+| `ONEWAYDIR` | esriFieldTypeString(10) | One Way Indicator | `P`: From-To, `N`: To-From, `B`: Both |
+| `MODELFLAG` | esriFieldTypeString(1) | Model Flag | `S`: Single, `M`: Median, `D`: Divided |
+| `STREETCLASS` | esriFieldTypeString(20) | Street Class | `FY`: Freeway, `HY`: Highway, `EX`: Expressway, `RA`: Ramp, `MA`: Major Arterial, `MI`: Minor Arterial, `CO`: Collector, `RE`: Residential, `EA`: Easement, `DW`: Driveway, `PA`: Path, `RU`: Rural Access, `AL`: Alley - all 13 are legitimate `StreetCenterline` rows, not something to filter out (see below) |
+| `FUNCTCLASS` | esriFieldTypeString(20) | Functional Class | `AR`: Freeway, `CA`: Highway, `LO`: Residential, `MA`: Major Arterial, `NC`: Neighborhood Collector |
 | `SPEEDLIMIT` | esriFieldTypeSmallInteger | Speed Limit | |
-| `PRIVATE` / `OFFICIAL` / `INCORPORATED` | esriFieldTypeString(3) | Private / Official / Incorporated | `Yes`, `No` (complete) |
-| `MUNILEFT` / `MUNIRIGHT` | esriFieldTypeString(10) | Municipality on Left/Right | `SJ`: San Jose, `SC`: Santa Clara, `MI`: Milpitas, **...17 more (truncated)** |
-| `ZIPLEFT` / `ZIPRIGHT` | esriFieldTypeString(5) | Zip on Left/Right | **...64 more (truncated)** |
+| `PRIVATE` / `OFFICIAL` / `INCORPORATED` | esriFieldTypeString(3) | Private / Official / Incorporated | `Yes`, `No` |
+| `MUNILEFT` / `MUNIRIGHT` | esriFieldTypeString(10) | Municipality on Left/Right | 20 South Bay cities/agencies (`SJ`: San Jose, `SC`: Santa Clara, `CO`: County, ...) |
+| `ZIPLEFT` / `ZIPRIGHT` | esriFieldTypeString(5) | Zip on Left/Right | 67 South Bay ZIP codes |
 | **`FOCWIDTH`** | esriFieldTypeDouble | **FOC Width** | the confirmed width field (feet; face-of-curb, i.e. curb-to-curb) - see "Fallback roadway width" above |
 | `ROWWIDTH` | esriFieldTypeDouble | ROW Width | right-of-way width (feet) - wider than `FOCWIDTH`, not currently read by `street_width_m` |
-| `FEATURECLASS` | esriFieldTypeString(50) | Feature Class | `AddressPoint`, `CondoParcel`, `Parcel`, **...33 more (truncated)** - a broad domain shared across many CSJ layers, not street-specific; whether a value like `StreetCenterline` is among the 33 more, and whether every row on *this* layer actually carries it (vs. some other value for a ramp/alley/driveway), is **not confirmed** - check with `--distinct-values FEATURECLASS` before filtering on it |
+| **`FEATURECLASS`** | esriFieldTypeString(50) | **Feature Class** | 36 values total - a domain shared citywide across many feature types on this layer, not street-specific: `AddressPoint`, `CondoParcel`, `Parcel`, 14 sanitary-sewer infrastructure values (`ssCasing`, `ssGravityMain`, `ssManhole`, `ssPressurizedMain`, ...), 18 storm-water infrastructure values (`swCulvert`, `swGravityMain`, `swManhole`, `swPressurizedMain`, ...), and **`StreetCenterline`** - the one confirmed value for real street centerlines (see below) |
 | `PLANCRT` / `PLANMOD` | esriFieldTypeString(25) | Plan Created/Modified | |
 | `LASTUPDATE` / `CREATIONDATE` | esriFieldTypeDate | Last Update/Creation Date | |
 | `NOTES` | esriFieldTypeString(255) | Notes | |
@@ -267,15 +270,18 @@ truncated as incomplete and get the full list with
 | `RSN` | esriFieldTypeString(10) | Street RSN | |
 | `PARCELID` | esriFieldTypeString(20) | PARCELID | |
 | `ESNLEFT` / `ESNRIGHT` | esriFieldTypeString(5) | ESNLEFT / ESNRIGHT | |
-| `FHWAFUNCTCLASS` | esriFieldTypeSmallInteger | FHWA Functional Class | `1`: Interstate, `2`: Other Freeway or Expressway, `3`: Other Principal Arterial, **...4 more (truncated)** |
-| `RESPONSIBILITY` | esriFieldTypeString(10) | Responsible Agency | `SJ`: San Jose, `SC`: Santa Clara, `CO`: County, **...11 more (truncated)** |
+| `FHWAFUNCTCLASS` | esriFieldTypeSmallInteger | FHWA Functional Class | `1`: Interstate, `2`: Other Freeway or Expressway, `3`: Other Principal Arterial, `4`: Minor Arterial, `5`: Major Collector, `6`: Minor Collector, `7`: Local |
+| `RESPONSIBILITY` | esriFieldTypeString(10) | Responsible Agency | `SJ`: San Jose, `SC`: Santa Clara, `CO`: County, `ST`: State of California, `US`: Federal, `PR`: Private, ... 8 more agencies |
 
-`STREETCLASS`, `FUNCTCLASS`, and `FEATURECLASS` are the three live
-candidates for the "Overlapping/occluding segments" fix below - whichever
-one cleanly separates real street centerlines from ramps/alleys/driveways
-(if any of them do) is what `streets.where` should filter on, once
-confirmed with `--list-fields`/`--distinct-values` against the untruncated
-metadata rather than this truncated table.
+**Resolved: `FEATURECLASS='StreetCenterline'` is the correct filter.**
+`STREETCLASS`/`FUNCTCLASS` looked like plausible candidates too, but they
+classify *within* `StreetCenterline` rows (alleys, driveways, and ramps are
+still `StreetCenterline` - see the `STREETCLASS` row above), not between
+street and non-street features. `FEATURECLASS` is the field that actually
+separates streets from everything else this layer also carries - notably
+sanitary-sewer and storm-water infrastructure lines (`ss*`/`sw*` values),
+which run close enough to real streets to explain the occlusion this was
+tracked down from (see below).
 
 ### Overlapping/occluding segments
 
@@ -297,22 +303,31 @@ overlapping segments and confirmed the OBJECTID pairing itself stays
 correct throughout `rasterize()`; the overlap and one-sided overwrite is
 real.
 
-**The right fix is filtering at the query, not after rasterizing** - once
-the correct layer and its actual classification field/values are confirmed
-(see above), set `--where`/`params.yaml`'s `streets.where` to exclude
-non-street features there, so nothing is left to occlude anything with.
-There is deliberately no default filter beyond "every feature" until that's
-confirmed - a guessed filter already caused one failed fetch (an ArcGIS
-query error from a field/value that turned out not to exist on the layer
-being queried), and a silently-wrong-but-not-erroring guess would be worse.
+**Resolved: filtering at the query, not after rasterizing.**
+`params.yaml`'s `streets.where` now pins
+`"FEATURECLASS='StreetCenterline'"` against the confirmed `MapServer/60`
+layer, so non-street features (sanitary-sewer/storm-water infrastructure
+lines, parcels, address points) are excluded before they ever reach
+`rasterize()` - nothing is left to occlude a real street with. Getting
+here took two guesses: the first guessed field names (`WIDTH`, etc. -
+see "Fallback roadway width") before `FOCWIDTH` was confirmed, and the
+first guessed *layer* (`MapServer/522`, which a substring-match discovery
+resolved to at the time) before `MapServer/60` was confirmed as the
+correct one - a `FEATURECLASS='StreetCenterline'` filter that had looked
+right in isolation caused an ArcGIS query error the moment it was pointed
+at the wrong layer, which is exactly the failure mode `--list-layers`/
+`--list-fields`/`--distinct-values` exist to catch before a filter is
+trusted again.
+
 **This applies to Phase 1 landmark manifests too**, not just ground truth:
 `scripts/build_manifests.py --streets-geojson` reads the exact same pinned
-export, so a manifest built from a contaminated pull has the same
-contamination in its candidate-road set and should be rebuilt once a clean
-pull exists. `check_label`'s "OBJECTID(s) never rasterized, occluded by an
-overlapping segment" warning (and the matching entry in `--report`'s JSON)
-is a safety net either way - it should be rare once the right layer/filter
-are pinned down, not an every-tile occurrence.
+export, so a manifest built from a pre-fix (unfiltered) pull has the same
+contamination in its candidate-road set and should be rebuilt from a fresh
+`fetch_csj_streets` pull. `check_label`'s "OBJECTID(s) never rasterized,
+occluded by an overlapping segment" warning (and the matching entry in
+`--report`'s JSON) remains a safety net either way - it should be rare now,
+not an every-tile occurrence, and a resurgence of it is a signal this
+filter or layer pin needs re-checking.
 
 ### Storage format
 
