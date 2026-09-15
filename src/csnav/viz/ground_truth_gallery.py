@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import numpy as np
 import rasterio
@@ -364,7 +364,7 @@ def write_gallery(
 
 
 def build_gallery(
-    labels_and_imagery: Sequence[tuple[PanopticLabel, str | Path]],
+    labels_and_imagery: Iterable[tuple[PanopticLabel, str | Path]],
     output_dir: str | Path,
     title: str = "Ground truth QA gallery",
     thumbnail_size: int = THUMBNAIL_SIZE,
@@ -373,7 +373,12 @@ def build_gallery(
 
     ``labels_and_imagery`` pairs each `PanopticLabel` with its source imagery
     GeoTIFF path; sort by ``label.stem`` before calling for a stable tile
-    order.
+    order. Consumed as a single-pass iterator - each pair's images are
+    rendered and written to disk (:func:`render_tile_images`) before the next
+    pair is produced, so passing a generator that loads one `PanopticLabel`
+    from disk at a time (see ``scripts/visualize_ground_truth.py``) keeps at
+    most one tile's full-resolution rasters in memory regardless of how many
+    tiles are in the set.
     """
     output_dir = Path(output_dir)
     tiles = [

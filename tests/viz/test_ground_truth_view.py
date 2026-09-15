@@ -82,3 +82,20 @@ def test_save_ground_truth_map_renders_with_an_empty_layer(tmp_path, label_with_
     assert "intersections (0)" in html
     road_match = re.search(r"roads \((\d+)\)", html)
     assert road_match and int(road_match.group(1)) > 0
+
+
+def test_ground_truth_review_map_accepts_a_true_one_shot_generator(label):
+    """Regression test: this must work with a generator, not just a list/Sequence.
+
+    ``scripts/visualize_ground_truth.py`` passes a generator that loads one
+    label from disk at a time specifically so the whole label set is never
+    resident in memory at once - a function that secretly needed ``len()``
+    or a second pass over ``labels`` would silently defeat that.
+    """
+
+    def one_shot():
+        yield label
+
+    fmap = ground_truth_review_map(one_shot())
+    html = fmap.get_root().render()
+    assert "tile" in html

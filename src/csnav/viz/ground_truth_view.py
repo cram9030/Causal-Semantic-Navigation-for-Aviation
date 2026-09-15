@@ -25,16 +25,25 @@ alive at once before ``.render()`` ever runs, which is enough to OOM-kill the
 process on a memory-constrained devcontainer well before it produces an
 error. Three ``GeoJson`` layers - each just a plain dict serialized once -
 avoid that no matter how many tiles are in the set.
+
+``ground_truth_review_map`` also only needs one `PanopticLabel` - full
+semantic/instance rasters included - alive **at a time**: it consumes
+``labels`` as a single-pass iterator, extracting a label's (much smaller)
+vectorized features before moving to the next, rather than materializing the
+whole label set (every tile's full-resolution arrays, simultaneously) as a
+list up front. A generator that loads one label from disk per step (see
+``scripts/visualize_ground_truth.py``) keeps this at O(1) raster memory
+regardless of how many tiles are in the set - the accumulated feature dicts
+are far smaller than the rasters they came from.
 """
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable
 
 import numpy as np
 from rasterio.features import shapes as rio_shapes
 
-from csnav.data.arcgis.models import Extent
 from csnav.data.ground_truth.labels import PanopticClass, PanopticLabel
 from csnav.viz.map_view import base_map, save_map
 from csnav.viz.style import INTERSECTION_COLOR, LANDMARK_COLOR, TILE_COLOR
@@ -51,14 +60,22 @@ def _folium():
     return folium
 
 
-def _label_bounds(labels: Sequence[PanopticLabel]) -> Extent:
-    return Extent(
-        xmin=min(label.tile.bounds.xmin for label in labels),
-        ymin=min(label.tile.bounds.ymin for label in labels),
-        xmax=max(label.tile.bounds.xmax for label in labels),
-        ymax=max(label.tile.bounds.ymax for label in labels),
-        wkid=4326,
-    )
+class _BoundsAccumulator:
+    """Running min/max over tile bounds seen so far - avoids holding every label just to compute this."""
+
+    def __init__(self) -> None:
+        self.xmin = self.ymin = float("inf")
+        self.xmax = self.ymax = float("-inf")
+
+    def add(self, bounds) -> None:
+        self.xmin = min(self.xmin, bounds.xmin)
+        self.ymin = min(self.ymin, bounds.ymin)
+        self.xmax = max(self.xmax, bounds.xmax)
+        self.ymax = max(self.ymax, bounds.ymax)
+
+    @property
+    def center(self) -> tuple[float, float]:
+        return (self.ymin + self.ymax) / 2.0, (self.xmin + self.xmax) / 2.0
 
 
 def _segments_by_instance(label: PanopticLabel) -> dict[int, Any]:
@@ -137,29 +154,34 @@ def ground_truth_review_map(labels: Iterable[PanopticLabel]):
     """A folium map of a rasterized label set: tile footprints, roads, intersections.
 
     ``labels`` is typically every `PanopticLabel` under one
-    ``scripts/build_ground_truth.py`` output directory (iterate the directory
-    with :meth:`PanopticLabel.load`). Each kind of geometry is one map-wide
-    ``GeoJson`` layer (not per-tile), toggled via folium's own layer control -
-    unlike `csnav.viz.map_view.manifest_map`'s per-window selector, ground
-    truth has no window structure to browse, only "how much is here and does
-    it look right", which a flat toggle answers fine even for a full-AOI
-    label set.
+    ``scripts/build_ground_truth.py`` output directory. It is consumed as a
+    single-pass iterator - pass a generator that loads one label from disk at
+    a time (see ``scripts/visualize_ground_truth.py``) rather than a
+    pre-built list, so only one tile's full-resolution rasters are ever alive
+    at once; a plain list works too, just without that memory benefit. Each
+    kind of geometry is one map-wide ``GeoJson`` layer (not per-tile),
+    toggled via folium's own layer control - unlike
+    `csnav.viz.map_view.manifest_map`'s per-window selector, ground truth has
+    no window structure to browse, only "how much is here and does it look
+    right", which a flat toggle answers fine even for a full-AOI label set.
     """
     folium = _folium()
-    labels = list(labels)
-    if not labels:
-        raise ValueError("no labels supplied")
 
-    bounds = _label_bounds(labels)
-    fmap = base_map(((bounds.ymin + bounds.ymax) / 2.0, (bounds.xmin + bounds.xmax) / 2.0), zoom=15)
-
-    tile_features = [_tile_feature(label) for label in labels]
+    bounds = _BoundsAccumulator()
+    tile_features: list[dict[str, Any]] = []
     road_features: list[dict[str, Any]] = []
     intersection_features: list[dict[str, Any]] = []
     for label in labels:
+        bounds.add(label.tile.bounds)
+        tile_features.append(_tile_feature(label))
         roads, intersections = _label_shape_features(label)
         road_features.extend(roads)
         intersection_features.extend(intersections)
+
+    if not tile_features:
+        raise ValueError("no labels supplied")
+
+    fmap = base_map(bounds.center, zoom=15)
 
     def _geojson_layer(features, name, color, fields, aliases, fill_opacity=0.45):
         # GeoJsonTooltip asserts its fields exist among the data's own

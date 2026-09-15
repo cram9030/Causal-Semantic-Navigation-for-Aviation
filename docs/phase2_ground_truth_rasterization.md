@@ -200,6 +200,42 @@ look at a lot of them quickly:
 `scripts/visualize_ground_truth.py` wires both views up from one labels
 directory + its paired imagery directory.
 
+### Memory: labels are loaded one tile at a time, never as one big list
+
+The GeoJson-batching fix above addressed the number of *rendering* objects
+held at once, but not a second, larger problem: `visualize_ground_truth.py`
+originally loaded every `PanopticLabel` in the label set - both
+full-resolution rasters included - into one Python `list` before doing
+anything with it, so both the map and the gallery ran with the *entire*
+label set's rasters resident in memory simultaneously regardless of how
+efficiently each one got rendered. On a real full-AOI label set (hundreds of
+tiles) this alone was enough to get the process SIGKILL'd, independent of
+the GeoJson fix.
+
+`ground_truth_review_map` and `build_gallery` now both consume `labels`/
+`labels_and_imagery` as a **single-pass iterator** rather than requiring a
+pre-built list - `scripts/visualize_ground_truth.py`'s `_iter_labels`
+generator loads one label from disk, lets the caller extract what it needs
+(vectorized features for the map; rendered PNGs, written straight to disk,
+for the gallery), and only then loads the next, so at most one tile's
+rasters are ever alive at once. Benchmarked at a more realistic tile
+resolution (512x512, 256 tiles): peak memory dropped from ~700 MB (the
+eager-list version) to ~185 MB (the streaming version) - about a 3.8x
+reduction, and the eager version's cost scales with the *whole* label set's
+total pixel count, so the gap only widens for a larger or higher-resolution
+AOI.
+
+The gallery scales to any label-set size this way with no further changes
+needed - each tile's images are written to disk and released before the
+next tile is even loaded. The review map is different: it draws everything
+in *one* map, so it still needs every tile's vectorized features (much
+smaller than the rasters they came from, but not free) resident at once.
+`scripts/visualize_ground_truth.py --limit N` / `--sample N` scope a run
+down to N tiles (respectively: the first N by tile key, or N evenly spread
+across the whole sorted set) when even that doesn't fit - the flags apply to
+both the map and the gallery in one run, though the gallery rarely needs
+them.
+
 ## Running the tests
 
 ```bash

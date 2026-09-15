@@ -510,6 +510,19 @@ gate on `build_ground_truth`'s output.
   list) for marking tiles worth a second look while moving through a large
   set.
 
+Labels are loaded from disk **one tile at a time**, never the whole label
+set at once - a full-AOI run is hundreds of tiles, each carrying two
+full-resolution rasters, and holding all of them in memory simultaneously is
+what used to get this script killed by the OOM killer on a
+memory-constrained devcontainer (`SIGKILL`, exit `137`, no traceback - a
+killed process can't raise one). If a full run still doesn't fit, pass
+`--limit N` (the first N tiles) or `--sample N` (N tiles evenly spaced
+across the whole set, for a representative subset rather than just
+whichever tiles sort first) to scope the run down - the review map still
+needs every *selected* tile's vectorized geometry in memory at once (there's
+only one map), so this is the knob for that, while the gallery scales to any
+size on its own.
+
 ### Pairing imagery vintages with a matching street network
 
 `params.yaml`'s `ground_truth.vintages` maps each imagery vintage directory

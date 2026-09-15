@@ -66,6 +66,23 @@ def test_build_gallery_writes_index_html_with_embedded_tiles(tmp_path, label, im
     assert label.stem in html
 
 
+def test_build_gallery_accepts_a_true_one_shot_generator(tmp_path, label, imagery_path):
+    """Regression test: must work with a generator, not just a list/Sequence.
+
+    ``scripts/visualize_ground_truth.py`` passes a generator that loads one
+    label from disk at a time so the whole label set is never resident in
+    memory at once.
+    """
+
+    def one_shot():
+        yield label, imagery_path
+
+    output_dir = tmp_path / "gallery"
+    index_path = build_gallery(one_shot(), output_dir)
+    assert index_path.exists()
+    assert label.stem in index_path.read_text(encoding="utf-8")
+
+
 def test_write_gallery_embeds_json_escaped_against_script_injection(tmp_path):
     from csnav.viz.ground_truth_gallery import GalleryTile
 
