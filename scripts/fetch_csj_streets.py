@@ -14,25 +14,40 @@ This is a one-shot pull for inspecting/caching the dataset locally - it is
 precomputed, per-trajectory-window manifest built in Phase 1) or a live
 per-frame query.
 
-The layer isn't only street centerlines - confirmed against the live schema
-at the time of writing, it mixes in other feature classes (ramps, alleys,
-driveways, etc.) whose geometry can sit close enough to a real street to
-occlude it when later rasterized (see
-``docs/phase2_ground_truth_rasterization.md``'s "Overlapping/occluding
+**"Streets" is an ambiguous name in CSJ's catalog** - more than one layer's
+name contains it (at least a full-attribute streets layer with width/lane
+fields, and a separate, sparser "Street Centerlines" reference/geocoding
+layer with no width field at all), and which one ``ArcGISCatalog.find_layer``
+resolves to by substring match has already changed between sessions with no
+code change on this side - CSJ's catalog reorganizing is exactly the kind
+of drift `docs/phase0_csj_streets_lidar.md` already flags as a known risk.
+The layer also isn't only street centerlines even within one match - it can
+mix in other feature classes (ramps, alleys, driveways) whose geometry sits
+close enough to a real street to occlude it when later rasterized (see
+`docs/phase2_ground_truth_rasterization.md`'s "Overlapping/occluding
 segments" section - this is what a real ground-truth build's silently-wrong
-OBJECTIDs turned out to be). The default ``--where`` filters to
-``FEATURECLASS='StreetCenterline'`` for that reason. **This is schema-
-specific and the exact field/value can change** (a different layer ID than
-the one this was confirmed against, a coded-value domain field where the
-stored value isn't the human-readable label, a schema update) - if
-``--where`` fails with an ArcGIS query error, run with ``--list-fields``
-first to print every field this layer actually has (name, type, and, for a
-coded-value domain field, every valid stored code and its display label),
-rather than guessing again.
+OBJECTIDs turned out to trace back to).
 
-Example (find the right field/value after a query error)::
+Because of that ambiguity, **there is no default ``--where`` filter beyond
+"every feature"** - picking a wrong field/value silently would just
+reintroduce the same class of bug with different symptoms. Three flags exist
+specifically to nail this down without guessing:
 
-    uv run python scripts/fetch_csj_streets.py --list-fields
+* ``--list-layers`` - print every layer whose name matches
+  ``--layer-name-contains`` (not just the first, unlike plain discovery),
+  so you can see every candidate and pin the right one with ``--layer-url``.
+* ``--list-fields`` - print the resolved layer's fields (name, type, alias,
+  and every stored code + display label for a coded-value domain field).
+* ``--distinct-values FIELD`` - print every value a plain string field
+  actually contains (e.g. ``DESIGNATION``/``DESCRIPTION``), for a field with
+  no coded-value domain to read off from metadata alone.
+
+Example (find the right layer, then field, then filter, after a query
+error or a suspiciously sparse pull)::
+
+    uv run python scripts/fetch_csj_streets.py --list-layers
+    uv run python scripts/fetch_csj_streets.py --layer-url <the right one> --list-fields
+    uv run python scripts/fetch_csj_streets.py --layer-url <the right one> --distinct-values DESIGNATION
 
 ``--historic-moment`` requests the network as it stood at a past edit moment
 instead of today's - useful for pairing ground-truth labels
@@ -150,9 +165,9 @@ def main() -> None:
         help="restrict the query to this EPSG:4326 envelope (default: the whole layer)",
     )
     parser.add_argument(
-        "--where", default="FEATURECLASS='StreetCenterline'",
-        help="ArcGIS SQL WHERE clause (default: street centerlines only, excluding ramps/alleys/etc. "
-        "that share this layer; pass \"1=1\" for every feature class)",
+        "--where", default="1=1",
+        help="ArcGIS SQL WHERE clause (default: every feature - see the module docstring for why "
+        "there is no more specific default here; use --list-fields/--distinct-values to find one)",
     )
     parser.add_argument(
         "--historic-moment", default=None,
@@ -172,10 +187,33 @@ def main() -> None:
         help="print this layer's field names/types/coded-value domains and exit, without querying "
         "or writing anything - use this to find the right --where field/value after a query error",
     )
+    parser.add_argument(
+        "--list-layers", action="store_true",
+        help="print every layer whose name matches --layer-name-contains (not just the first one "
+        "discovery would pick) and exit - use this when a query error or a suspiciously sparse "
+        "field list suggests --layer-url/discovery landed on the wrong 'Streets'-named layer",
+    )
+    parser.add_argument(
+        "--distinct-values", default=None, metavar="FIELD",
+        help="print every distinct value FIELD actually contains on the resolved layer and exit, "
+        "without writing anything - for a plain string field with no coded-value domain to read "
+        "off from --list-fields alone",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s")
+
+    if args.list_layers:
+        catalog = ArcGISCatalog(base_url=args.base_url)
+        matches = catalog.find_layers(
+            args.layer_name_contains, root=args.root, service_name_contains=args.service_name_contains
+        )
+        if not matches:
+            print(f"(no layer matching {args.layer_name_contains!r} found)")
+        for url, name in matches:
+            print(f"{name}: {url}")
+        return
 
     layer_url = resolve_layer_url(args)
     client = CSJStreetsClient(layer_url, page_size=args.page_size)
@@ -184,12 +222,19 @@ def main() -> None:
         print_fields(client.get_metadata())
         return
 
-    if args.output is None:
-        raise SystemExit("--output is required (unless --list-fields)")
-
     bbox = None
     if args.bbox:
         bbox = Extent(xmin=args.bbox[0], ymin=args.bbox[1], xmax=args.bbox[2], ymax=args.bbox[3], wkid=4326)
+
+    if args.distinct_values:
+        values = client.query_distinct_values(args.distinct_values, where=args.where, bbox=bbox)
+        print(f"{len(values)} distinct value(s) for {args.distinct_values!r}:")
+        for value in values:
+            print(f"  {value!r}")
+        return
+
+    if args.output is None:
+        raise SystemExit("--output is required (unless --list-fields/--list-layers/--distinct-values)")
 
     segments = client.query(bbox=bbox, where=args.where, historic_moment=args.historic_moment)
     logger.info("fetched %d street segment(s)", len(segments))

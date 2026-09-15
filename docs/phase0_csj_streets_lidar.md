@@ -173,16 +173,22 @@ how this maps onto the originally-sketched module layout.
 - Field names for width/lane counts are read generically via `attributes`
   rather than named explicitly in `StreetSegment`, since the exact schema is
   a property of the live service, not this client.
-- The layer isn't only street centerlines - it mixes in other
-  `FEATURECLASS` values (ramps, alleys, driveways, etc.), confirmed against
-  the live schema after a real ground-truth build turned out to have
+- The layer isn't only street centerlines - a real ground-truth build found
   non-street features occluding real streets once rasterized (see
   `docs/phase2_ground_truth_rasterization.md`'s "Overlapping/occluding
-  segments" section). This client itself stays schema-agnostic (`where`
-  defaults to `"1=1"`, same as always) - filtering to
-  `FEATURECLASS='StreetCenterline'` is a caller-level default instead,
-  applied in `scripts/fetch_csj_streets.py`'s own `--where` default and
-  `params.yaml`'s `streets.where`.
+  segments" section). **`FEATURECLASS` is not a reliable fix for this**:
+  it exists on some "Streets"-named layers in CSJ's catalog but not others
+  (`ArcGISCatalog.find_layer`'s first-match-wins substring search has
+  already resolved to a different layer between sessions with no change on
+  this side - see `docs/phase2_ground_truth_rasterization.md`'s "'Streets'
+  is an ambiguous name in CSJ's catalog" section), and a `FEATURECLASS`
+  filter that happened to work against one such layer produced an ArcGIS
+  400 query error against another. This client stays schema-agnostic
+  (`where` defaults to `"1=1"`); so do `scripts/fetch_csj_streets.py`'s own
+  `--where` default and `params.yaml`'s `streets.where` - deliberately, until
+  the right layer and classification field are confirmed via
+  `--list-layers`/`--list-fields`/`--distinct-values` (see that same phase2
+  doc section for the workflow).
 
 ## `LidarElevationClient`
 

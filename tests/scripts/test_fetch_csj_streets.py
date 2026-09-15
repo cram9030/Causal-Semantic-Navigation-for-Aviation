@@ -87,10 +87,11 @@ def test_main_writes_geojson_feature_collection(tmp_path):
 
 
 @responses.activate
-def test_main_defaults_to_street_centerlines_only(tmp_path):
-    """The Streets layer mixes in other FEATURECLASS values (ramps, alleys, etc.) that can
-    occlude real street centerlines when rasterized - the default --where excludes them
-    unless a caller explicitly asks for everything.
+def test_main_defaults_to_every_feature_no_guessed_filter(tmp_path):
+    """No default --where filter beyond "everything" - CSJ's catalog resolves "Streets" to more
+    than one layer, and which one is picked has already drifted between sessions, so a guessed
+    filter here risks silently reintroducing the same class of bug with different symptoms.
+    Use --list-layers/--list-fields/--distinct-values to find the right one deliberately instead.
     """
     layer_url = f"{SERVICE_URL}/60"
     responses.add(responses.GET, f"{layer_url}/query", json={"features": []})
@@ -105,7 +106,7 @@ def test_main_defaults_to_street_centerlines_only(tmp_path):
         sys.argv = old_argv
 
     query_url = responses.calls[0].request.url
-    assert "FEATURECLASS" in query_url and "StreetCenterline" in query_url
+    assert "where=1%3D1" in query_url
 
 
 @responses.activate
@@ -158,3 +159,57 @@ def test_list_fields_does_not_require_output(capsys):
         fcs.main()  # must not raise for missing --output
     finally:
         sys.argv = old_argv
+
+
+@responses.activate
+def test_list_layers_prints_every_matching_layer_not_just_the_first(capsys):
+    """find_layer's first-match-wins discovery is exactly how a real session ended up querying
+    the wrong "Streets"-named layer after CSJ's catalog reorganized - --list-layers shows every
+    candidate so the right one can be picked deliberately via --layer-url.
+    """
+    responses.add(
+        responses.GET, BASE,
+        json={"folders": [], "services": [{"name": "OPN/OPN_OpenDataService", "type": "MapServer"}]},
+    )
+    responses.add(
+        responses.GET, SERVICE_URL,
+        json={"layers": [{"id": 60, "name": "Streets"}, {"id": 522, "name": "Street Centerlines"}]},
+    )
+
+    argv = [
+        "fetch_csj_streets.py", "--base-url", BASE, "--service-name-contains", "OpenDataService",
+        "--layer-name-contains", "Street", "--root", "", "--list-layers",
+    ]
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        fcs.main()
+    finally:
+        sys.argv = old_argv
+
+    out = capsys.readouterr().out
+    assert f"{SERVICE_URL}/60" in out
+    assert f"{SERVICE_URL}/522" in out
+
+
+@responses.activate
+def test_distinct_values_prints_every_value_and_issues_no_write(tmp_path, capsys):
+    layer_url = f"{SERVICE_URL}/60"
+    responses.add(
+        responses.GET, f"{layer_url}/query",
+        json={"features": [{"attributes": {"DESIGNATION": "Local"}}, {"attributes": {"DESIGNATION": "Alley"}}]},
+    )
+
+    argv = ["fetch_csj_streets.py", "--layer-url", layer_url, "--distinct-values", "DESIGNATION"]
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        fcs.main()
+    finally:
+        sys.argv = old_argv
+
+    out = capsys.readouterr().out
+    assert "Local" in out and "Alley" in out
+    query_url = responses.calls[0].request.url
+    assert "returnDistinctValues=true" in query_url
+    assert "outFields=DESIGNATION" in query_url

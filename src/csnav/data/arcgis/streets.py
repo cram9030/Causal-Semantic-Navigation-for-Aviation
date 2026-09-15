@@ -169,6 +169,51 @@ class CSJStreetsClient:
             raise CSJStreetsError(f"ArcGIS error for {self.layer_url}: {data['error']}")
         return data
 
+    def query_distinct_values(
+        self, field: str, where: str = "1=1", bbox: Extent | None = None
+    ) -> list[Any]:
+        """Every distinct value ``field`` actually contains, via ArcGIS's own de-duplication.
+
+        For a plain string/free-text field with no coded-value domain,
+        layer metadata alone can't say what values it actually holds - only
+        a domain field declares that up front (see
+        `csnav.data.arcgis.streets.WIDTH_FIELD_CANDIDATES`'s own caveat about
+        guessed field names). This is the direct way to check: e.g. does a
+        ``DESIGNATION``/``DESCRIPTION`` field's real vocabulary distinguish
+        actual streets from ramps/alleys/driveways, where a hoped-for
+        ``FEATURECLASS``-style field turns out not to exist on this layer at
+        all. Uses ``returnDistinctValues``/``outFields`` server-side rather
+        than pulling every feature and de-duplicating client-side.
+        """
+        if bbox is not None and bbox.wkid != OUTPUT_WKID:
+            raise ValueError(f"bbox must be EPSG:{OUTPUT_WKID}, got wkid={bbox.wkid}")
+        params: dict[str, Any] = {
+            "f": "json",
+            "where": where,
+            "outFields": field,
+            "returnDistinctValues": "true",
+            "returnGeometry": "false",
+            "orderByFields": field,
+        }
+        if bbox is not None:
+            params.update(
+                {
+                    "geometry": f"{bbox.xmin},{bbox.ymin},{bbox.xmax},{bbox.ymax}",
+                    "geometryType": "esriGeometryEnvelope",
+                    "inSR": OUTPUT_WKID,
+                    "spatialRel": "esriSpatialRelIntersects",
+                }
+            )
+        resp = self.session.get(f"{self.layer_url}/query", params=params, timeout=self.timeout)
+        resp.raise_for_status()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise CSJStreetsError(f"non-JSON response from {self.layer_url}/query") from exc
+        if isinstance(data, dict) and data.get("error"):
+            raise CSJStreetsError(f"ArcGIS error querying {self.layer_url}: {data['error']}")
+        return [feature.get("attributes", {}).get(field) for feature in data.get("features") or []]
+
     def query(
         self,
         bbox: Extent | None = None,

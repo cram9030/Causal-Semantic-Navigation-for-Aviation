@@ -36,16 +36,21 @@ streets:
   root: OPN
   service_name_contains: OpenDataService
   layer_name_contains: Streets
-  # The Streets layer isn't only street centerlines - it mixes in other
-  # FEATURECLASS values (ramps, alleys, driveways, etc.) that geometrically
-  # overlap real streets closely enough to occlude them when rasterized (see
-  # docs/phase2_ground_truth_rasterization.md's "Overlapping/occluding
-  # segments" section - this was confirmed against the live schema after a
-  # real ground-truth build showed segments silently overwritten by an
-  # unrelated, unfindable OBJECTID). Filtering to StreetCenterline here means
-  # only genuine street centerlines are ever pulled/rasterized in the first
-  # place, rather than trying to arbitrate overlaps after the fact.
-  where: "FEATURECLASS='StreetCenterline'"
+  # "Streets" is an ambiguous name in CSJ's catalog - more than one layer's
+  # name contains it, and which one layer_name_contains/root/
+  # service_name_contains resolve to (via ArcGISCatalog.find_layer's
+  # first-match-wins substring search) has already drifted between sessions
+  # with no change on this side, per docs/phase0_csj_streets_lidar.md's
+  # known-risk note on CSJ's catalog reorganizing. A real ground-truth build
+  # also found the layer mixes in other feature classes (ramps, alleys,
+  # driveways) that can geometrically occlude real streets once rasterized -
+  # see docs/phase2_ground_truth_rasterization.md's "Overlapping/occluding
+  # segments" section. There is deliberately no filtered default here until
+  # the right layer/field/value is reconfirmed: run
+  # `scripts/fetch_csj_streets.py --list-layers`, then `--list-fields` (or
+  # `--distinct-values FIELD`) against the correct one, then set this value
+  # explicitly - don't guess a filter here again.
+  where: "1=1"
   page_size: 2000
 
 lidar:

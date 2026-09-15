@@ -177,13 +177,47 @@ exist for catching and diagnosing a mismatch like this in the future
   candidates list in `csnav/data/arcgis/streets.py` and rebuild.
 
 **Resolved**: CSJ's real field is `FOCWIDTH` ("face-of-curb width", i.e.
-curb-to-curb), now first in `WIDTH_FIELD_CANDIDATES`.
+curb-to-curb), now first in `WIDTH_FIELD_CANDIDATES` - confirmed against a
+layer that does carry it. See the caveat about *which* layer that is, right
+below.
+
+### "Streets" is an ambiguous name in CSJ's catalog
+
+`scripts/fetch_csj_streets.py` resolves the layer to query by a name
+substring match (`ArcGISCatalog.find_layer`, first match wins) rather than a
+hardcoded service/layer id, per `docs/phase0_csj_streets_lidar.md`'s
+discovery-over-hardcoding rationale - CSJ's catalog has reorganized this
+before. In practice, more than one layer's name contains "Streets": at
+least one full-attribute layer (the one `FOCWIDTH` was confirmed against)
+and a separate, sparser "Street Centerlines" reference/geocoding layer with
+no width field at all (fields limited to things like `OBJECTID`,
+`FACILITYID`, `CENTERLINEID`, `FULLNAME`, `DESIGNATION`, `DESCRIPTION`,
+`NOTES`). Which one `find_layer`'s substring match resolves to has already
+changed between sessions with no code change on this side.
+
+Three flags on `scripts/fetch_csj_streets.py` exist specifically to pin this
+down deliberately instead of guessing:
+
+- `--list-layers` prints every layer whose name matches
+  `--layer-name-contains` (not just the first), so every "Streets"-ish
+  candidate is visible at once.
+- `--list-fields` (against a layer pinned with `--layer-url`) prints that
+  layer's actual fields - name, type, alias, and every stored code + display
+  label for a coded-value domain field.
+- `--distinct-values FIELD` prints every value a plain string field (no
+  coded-value domain to read off from metadata alone - e.g. `DESIGNATION`/
+  `DESCRIPTION`) actually contains.
+
+Once the right layer is confirmed, pin it explicitly with `--layer-url`
+(and the equivalent in `params.yaml`, or a `--layer-url`-equivalent
+override) rather than relying on the substring match resolving to the same
+one indefinitely.
 
 ### Overlapping/occluding segments
 
-CSJ's `Streets` layer isn't only street centerlines - it mixes in other
-`FEATURECLASS` values (ramps, alleys, driveways, etc., confirmed against the
-live schema) that can sit close enough to a real street to spatially
+Independent of *which* layer is queried, CSJ's Streets data can mix
+non-street features (ramps, alleys, driveways) in with real street
+centerlines, and those can sit close enough to a real street to spatially
 overlap it once buffered. `rasterize()` burns overlapping polygons in a
 fixed order (currently: alphabetical by `segment_id`/OBJECTID), and
 whichever one is drawn last **completely overwrites** the earlier one's
@@ -199,23 +233,22 @@ overlapping segments and confirmed the OBJECTID pairing itself stays
 correct throughout `rasterize()`; the overlap and one-sided overwrite is
 real.
 
-**Fix**: filter at the query, not after rasterizing. `params.yaml`'s
-`streets.where` (and `scripts/fetch_csj_streets.py`'s own `--where` default)
-now default to `FEATURECLASS='StreetCenterline'`, so non-street features
-never enter the pinned streets export in the first place - cleaner than
-trying to arbitrate overlaps after the fact, and it means there's nothing
-left to occlude anything with. **This applies to Phase 1 landmark
-manifests too**, not just ground truth: `scripts/build_manifests.py
---streets-geojson` reads the exact same pinned export, so a manifest built
-before this filter was added can have the same contamination in its
-candidate-road set. Re-fetch (`scripts/fetch_csj_streets.py`, no `--where`
-override needed to get the new default) and rebuild both manifests and
-ground-truth labels from the corrected pull. `check_label`'s "OBJECTID(s)
-never rasterized, occluded by an overlapping segment" warning (and the
-matching entry in `--report`'s JSON) still exists as a safety net for
-genuine remaining overlaps within `StreetCenterline` itself (e.g. divided
-roads digitized as two overlapping centerlines) - it's expected to be rare
-now, not the every-tile occurrence a mixed-feature-class pull produced.
+**The right fix is filtering at the query, not after rasterizing** - once
+the correct layer and its actual classification field/values are confirmed
+(see above), set `--where`/`params.yaml`'s `streets.where` to exclude
+non-street features there, so nothing is left to occlude anything with.
+There is deliberately no default filter beyond "every feature" until that's
+confirmed - a guessed filter already caused one failed fetch (an ArcGIS
+query error from a field/value that turned out not to exist on the layer
+being queried), and a silently-wrong-but-not-erroring guess would be worse.
+**This applies to Phase 1 landmark manifests too**, not just ground truth:
+`scripts/build_manifests.py --streets-geojson` reads the exact same pinned
+export, so a manifest built from a contaminated pull has the same
+contamination in its candidate-road set and should be rebuilt once a clean
+pull exists. `check_label`'s "OBJECTID(s) never rasterized, occluded by an
+overlapping segment" warning (and the matching entry in `--report`'s JSON)
+is a safety net either way - it should be rare once the right layer/filter
+are pinned down, not an every-tile occurrence.
 
 ### Storage format
 

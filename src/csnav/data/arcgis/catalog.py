@@ -163,6 +163,46 @@ class ArcGISCatalog:
         path = f"{ref.folder}/{ref.name}/{ref.service_type}" if ref.folder else f"{ref.name}/{ref.service_type}"
         return f"{self.base_url}/{path}"
 
+    def find_layers(
+        self,
+        layer_name_contains: str,
+        root: str = "",
+        service_name_contains: str = "",
+        service_types: tuple[str, ...] = ("MapServer", "FeatureServer"),
+    ) -> list[tuple[str, str]]:
+        """Every sublayer whose name matches, as ``(layer_url, layer_name)`` pairs.
+
+        :meth:`find_layer` returns only the *first* match, silently - fine when
+        there is really only one, but San Jose's catalog can expose more than
+        one layer whose name contains the same substring (e.g. a full-attribute
+        "Streets" layer alongside a separate, sparser "Street Centerlines"
+        reference/geocoding layer), and picking the wrong one by luck-of-
+        iteration-order is exactly how a real ground-truth build ended up
+        querying a layer with no width field at all after CSJ's catalog
+        reorganized (see `docs/phase0_csj_streets_lidar.md`). This walks the
+        same services :meth:`find_layer` does but collects every match instead
+        of returning on the first one, so a caller can compare and pick
+        deliberately via ``--layer-url`` rather than trust discovery blindly.
+        """
+        needle = layer_name_contains.lower()
+        candidates = self.discover_services(root=root, name_contains=service_name_contains, service_types=service_types)
+        matches: list[tuple[str, str]] = []
+        for ref in candidates:
+            service_url = self.service_rest_url(ref)
+            try:
+                data = self._get_json_at(service_url)
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status in (403, 404):
+                    logger.warning("skipping service %r: HTTP %s", service_url, status)
+                    continue
+                raise
+            for layer in data.get("layers") or []:
+                name = str(layer.get("name", ""))
+                if needle in name.lower():
+                    matches.append((f"{service_url}/{layer['id']}", name))
+        return matches
+
     def find_layer(
         self,
         layer_name_contains: str,
@@ -177,28 +217,20 @@ class ArcGISCatalog:
         rather than as their own top-level service - so name-matching at the
         service level alone (:meth:`discover_services`) isn't enough. This walks
         every service matching ``service_name_contains`` under ``root``, inspects
-        each one's own layer list, and returns the REST URL of the first layer
-        whose name contains ``layer_name_contains`` (case-insensitive).
+        each one's own layer list, and returns the REST URL of the *first* layer
+        whose name contains ``layer_name_contains`` (case-insensitive) - use
+        :meth:`find_layers` instead when more than one match is possible and it
+        matters which one you get.
 
         Raises :class:`ArcGISCatalogError` if no matching layer is found in any
         matching service.
         """
-        needle = layer_name_contains.lower()
-        candidates = self.discover_services(root=root, name_contains=service_name_contains, service_types=service_types)
-        for ref in candidates:
-            service_url = self.service_rest_url(ref)
-            try:
-                data = self._get_json_at(service_url)
-            except requests.HTTPError as exc:
-                status = exc.response.status_code if exc.response is not None else None
-                if status in (403, 404):
-                    logger.warning("skipping service %r: HTTP %s", service_url, status)
-                    continue
-                raise
-            for layer in data.get("layers") or []:
-                if needle in str(layer.get("name", "")).lower():
-                    return f"{service_url}/{layer['id']}"
+        matches = self.find_layers(
+            layer_name_contains, root=root, service_name_contains=service_name_contains, service_types=service_types
+        )
+        if matches:
+            return matches[0][0]
         raise ArcGISCatalogError(
-            f"no layer matching {layer_name_contains!r} found in {len(candidates)} service(s) "
-            f"matching {service_name_contains!r} under root {root!r}"
+            f"no layer matching {layer_name_contains!r} found matching {service_name_contains!r} "
+            f"under root {root!r}"
         )

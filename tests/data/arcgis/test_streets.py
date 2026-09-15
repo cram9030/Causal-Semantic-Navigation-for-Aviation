@@ -195,3 +195,55 @@ def test_segment_geometry_linestring_and_multilinestring():
     multi = StreetSegment(object_id=2, parts=(((0, 0), (1, 1)), ((2, 2), (3, 3))), attributes={})
     geometry = segment_geometry(multi)
     assert [list(part.coords) for part in geometry.geoms] == [[(0, 0), (1, 1)], [(2, 2), (3, 3)]]
+
+
+@responses.activate
+def test_query_distinct_values_returns_values_in_order():
+    responses.add(
+        responses.GET,
+        f"{LAYER_URL}/query",
+        json={
+            "features": [
+                {"attributes": {"DESIGNATION": "Alley"}},
+                {"attributes": {"DESIGNATION": "Local"}},
+            ]
+        },
+    )
+
+    client = CSJStreetsClient(LAYER_URL)
+    values = client.query_distinct_values("DESIGNATION")
+
+    assert values == ["Alley", "Local"]
+    url = responses.calls[0].request.url
+    assert "returnDistinctValues=true" in url
+    assert "outFields=DESIGNATION" in url
+    assert "orderByFields=DESIGNATION" in url
+    assert "returnGeometry=false" in url
+
+
+@responses.activate
+def test_query_distinct_values_with_bbox_sends_envelope_params():
+    responses.add(responses.GET, f"{LAYER_URL}/query", json={"features": []})
+
+    client = CSJStreetsClient(LAYER_URL)
+    bbox = Extent(xmin=-122.0, ymin=37.2, xmax=-121.8, ymax=37.4, wkid=4326)
+    client.query_distinct_values("DESIGNATION", bbox=bbox)
+
+    url = responses.calls[0].request.url
+    assert "geometryType=esriGeometryEnvelope" in url
+
+
+def test_query_distinct_values_rejects_non_4326_bbox():
+    client = CSJStreetsClient(LAYER_URL)
+    bbox = Extent(xmin=0, ymin=0, xmax=1, ymax=1, wkid=3857)
+    with pytest.raises(ValueError):
+        client.query_distinct_values("DESIGNATION", bbox=bbox)
+
+
+@responses.activate
+def test_query_distinct_values_raises_on_arcgis_error_payload():
+    responses.add(responses.GET, f"{LAYER_URL}/query", json={"error": {"code": 400, "message": "boom"}})
+
+    client = CSJStreetsClient(LAYER_URL)
+    with pytest.raises(CSJStreetsError):
+        client.query_distinct_values("NOFIELD")
