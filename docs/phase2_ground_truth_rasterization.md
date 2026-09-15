@@ -168,6 +168,22 @@ look at a lot of them quickly:
    geometry actually sit on the streets, across the whole set" - the same
    question `csnav.viz.map_view.manifest_map` answers for candidate-road
    manifests.
+
+   Every kind of geometry (tiles, roads, intersections) is one
+   `folium.GeoJson` layer holding a whole `FeatureCollection`, never one
+   Python object per shape. This matters at real scale: a full-AOI label set
+   is hundreds of tiles over a dense city street network, and a road can
+   even vectorize into several disjoint polygon pieces where an intersection
+   cuts through it (see `rasterize.py`'s docstring), so the shape count for
+   a few hundred tiles can run into the thousands. An earlier version drew
+   one `folium.Polygon`/`Rectangle`/`CircleMarker` per shape - that many
+   heavyweight Python/Jinja objects held in memory at once (well before
+   `.render()` ever runs) was enough to get the whole process SIGKILL'd by
+   the OOM killer on a memory-constrained devcontainer, with no traceback at
+   all to point at why. Benchmarked against a synthetic ~5,000-instance
+   label set, the `GeoJson`-batched version used about 30% less peak memory
+   and ran about 3x faster than the one-object-per-shape version, and the
+   gap widens with instance count.
 3. **`csnav.viz.ground_truth_gallery`** - the exhaustive per-tile view, a
    self-contained static HTML page (no server). Two pixel-aligned PNGs per
    tile (imagery, and a transparent-background label overlay) are stacked

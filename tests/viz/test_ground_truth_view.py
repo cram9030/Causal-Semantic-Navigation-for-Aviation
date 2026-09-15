@@ -12,6 +12,7 @@ import re
 
 import pytest
 
+from csnav.data.arcgis.streets import StreetSegment
 from csnav.data.ground_truth.rasterize import GroundTruthBuilder
 from csnav.viz.ground_truth_view import ground_truth_review_map, save_ground_truth_map
 
@@ -21,6 +22,26 @@ from tests.data.ground_truth.conftest import TILE_HEIGHT_PX, TILE_WIDTH_PX
 @pytest.fixture
 def label(tile, transform, crossing_streets):
     return GroundTruthBuilder().rasterize(crossing_streets, tile, TILE_WIDTH_PX, TILE_HEIGHT_PX, transform)
+
+
+@pytest.fixture
+def label_with_no_intersections(tile, transform):
+    """A tile with exactly one road and no crossings - the intersections layer's FeatureCollection is empty.
+
+    Regression test for GeoJsonTooltip's own assertion that its fields exist
+    among the data's properties keys: that check fails outright against an
+    *empty* FeatureCollection (there is nothing to check the fields
+    against), which crashed ``.render()``/``.save()`` for any label set with
+    zero rasterized intersections before this was guarded.
+    """
+    single_road = [
+        StreetSegment(
+            object_id=1,
+            parts=(((tile.bounds.xmin, 37.3382), (tile.bounds.xmax, 37.3382)),),
+            attributes={"WIDTH": 30.0},
+        )
+    ]
+    return GroundTruthBuilder().rasterize(single_road, tile, TILE_WIDTH_PX, TILE_HEIGHT_PX, transform)
 
 
 def test_ground_truth_review_map_rejects_empty_input():
@@ -52,3 +73,12 @@ def test_save_ground_truth_map_writes_file(tmp_path, label):
     destination = save_ground_truth_map(fmap, tmp_path / "nested" / "map.html")
     assert destination.exists()
     assert destination.read_text().startswith("<!DOCTYPE html>") or "<html" in destination.read_text()
+
+
+def test_save_ground_truth_map_renders_with_an_empty_layer(tmp_path, label_with_no_intersections):
+    fmap = ground_truth_review_map([label_with_no_intersections])
+    destination = save_ground_truth_map(fmap, tmp_path / "map.html")
+    html = destination.read_text()
+    assert "intersections (0)" in html
+    road_match = re.search(r"roads \((\d+)\)", html)
+    assert road_match and int(road_match.group(1)) > 0
