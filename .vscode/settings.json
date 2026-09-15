@@ -11,12 +11,14 @@
     "**/data/cache/**": true,
     "**/data/manifests/**": true,
     "**/data/dvc-storage/**": true,
+    "**/data/ground_truth/current/**": true,
     "**/.venv/**": true
   },
   "files.exclude": {
     "**/data/raw": true,
     "**/data/cache": true,
     "**/data/manifests": true,
+    "**/data/ground_truth/current/**": true,
     "**/data/dvc-storage": true
   },
   "search.exclude": {
@@ -24,6 +26,7 @@
     "**/data/cache/**": true,
     "**/data/manifests/**": true,
     "**/data/dvc-storage/**": true,
+    "**/data/ground_truth/current/**": true,
     "**/.venv/**": true
   },
   "python.defaultInterpreterPath": "/opt/venv/bin/python"
