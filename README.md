@@ -94,6 +94,45 @@ fetch_streets -+-> build_manifests                +-> check_ground_truth@<vintag
 | `check_ground_truth@<vintage>` | Run automated structural/statistical checks over that label set. | [`docs/phase2_ground_truth_rasterization.md`](docs/phase2_ground_truth_rasterization.md) |
 | `visualize_ground_truth@<vintage>` | Render that label set's review map and QA gallery. | [`docs/phase2_ground_truth_rasterization.md`](docs/phase2_ground_truth_rasterization.md) |
 
+### Why `dvc repro` doesn't go stale the way a manual script sequence can
+
+Every stage's script file, input files, and `params.yaml` values it reads
+are declared as that stage's `deps`/`params`; every file/directory it
+writes is declared as its `outs`. That gives `dvc repro` two guarantees a
+sequence of manual `scripts/*.py` invocations doesn't have:
+
+1. **A stage reruns when anything it declared a dependency on changes** -
+   not just a `params.yaml` edit, but a code change to the script itself
+   (`fetch_streets`'s `deps` include `scripts/fetch_csj_streets.py`), and
+   the change cascades: `dvc repro` with no stage name walks the whole DAG
+   and reruns every stage downstream of whatever changed, in dependency
+   order, in one call - there's no "did I remember to also rebuild the
+   labels, then the gallery" to get wrong.
+2. **A stage's `outs` are reconciled to exactly what that stage last
+   produced, on every `dvc repro` call - including one where nothing
+   changed and the stage is just "cached, checking out outputs".** A file
+   left in a DVC-tracked output directory that isn't part of what the
+   stage actually wrote gets removed the next time DVC touches it, and a
+   stage that reruns starts from an empty directory, not whatever was
+   already there. `--overwrite`-style "skip if it already exists" logic in
+   the scripts themselves is what direct invocation needs instead, since it
+   has neither guarantee.
+
+Both of these were verified directly (not assumed): a minimal two-stage DVC
+pipeline, editing only the upstream script's source and running plain
+`dvc repro`, reran that stage *and* the downstream one automatically and
+rebuilt from the new output; and a file manually dropped into a tracked
+output directory was removed by the very next `dvc repro`, even one where
+the stage itself was reported as cached.
+
+**The caveat**: both guarantees are properties of `dvc repro` itself, not
+of the underlying scripts - a direct `scripts/*.py` invocation (see each
+phase doc) gets neither one. That's why the scripts also pin their own
+correct defaults independently of `params.yaml`, and why
+`visualize_ground_truth.py` warns at runtime when it's about to reuse a
+stale output directory outside of DVC - two different workflows, each
+needing its own protection.
+
 `build_manifests` depends on `fetch_streets`' pinned output (not the live
 CSJ Streets layer) so the manifest it builds is reproducible from the exact
 street geometry it was built against - the live layer refreshes weekly and
