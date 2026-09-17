@@ -204,12 +204,11 @@ rasterized centerlines (a junction-clustering pass, the same algorithm
 trajectory window) rather than sourced from a separate CSJ dataset - CSJ
 Streets only publishes centerlines.
 
-### Two deliberate departures from the integration plan's UML sketch
+### `rasterize()` is a pure function of geometry, not a live-fetching step
 
-§7's UML gives `GroundTruthBuilder.rasterize(streets, tile) -> PanopticLabel`
-with edges to both `CSJStreetsClient` and `ArcGISTileClient`. The actual
-signature is `rasterize(streets, tile, width, height, transform, ...)`, and
-neither client is called at rasterization time:
+§7's UML gives `GroundTruthBuilder.rasterize(streets, tile, width, height,
+transform) -> PanopticLabel`, with an edge to `LocalFrame` only - neither
+`CSJStreetsClient` nor `ArcGISTileClient` is called at rasterization time:
 
 1. **The pixel grid is supplied, not fetched.** `width`/`height`/`transform`
    are read by the caller from an already-fetched, already-reprojected

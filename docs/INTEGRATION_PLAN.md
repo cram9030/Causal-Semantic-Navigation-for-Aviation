@@ -272,17 +272,17 @@ src/csnav/viz/
 └── ground_truth_gallery.py  # static paged HTML QA gallery for exhaustive per-tile review
 ```
 
-Two departures from §7's UML sketch of `GroundTruthBuilder.rasterize(streets,
-tile) -> PanopticLabel`: it takes the target pixel grid
+`GroundTruthBuilder.rasterize()` (§7's UML) is a pure function of geometry,
+not a live-fetching step: it takes the target pixel grid
 (`width`/`height`/`transform`) as explicit arguments, read by the caller from
-an already-fetched, already-reprojected imagery GeoTIFF rather than fetched
-live via `ArcGISTileClient` - this keeps rasterization a pure, easily-tested
-function of geometry and guarantees pixel-for-pixel alignment with the
-imagery a training loader actually reads; and `streets` is an in-memory
-`StreetSegment` list from an archived GeoJSON pull, not a live
-`CSJStreetsClient` query - the same "pin to an archived snapshot, don't
-re-query the weekly-refreshed live layer" reasoning
-`csnav.trajectory.manifest_builder.StaticStreetsSource` already applies.
+an already-fetched, already-reprojected imagery GeoTIFF, and `streets` as an
+in-memory `StreetSegment` list from an archived GeoJSON pull - the same "pin
+to an archived snapshot, don't re-query the weekly-refreshed live layer"
+reasoning `csnav.trajectory.manifest_builder.StaticStreetsSource` already
+applies. This keeps rasterization easily testable (a synthetic transform and
+segment list, no network or raster file needed) and guarantees
+pixel-for-pixel alignment with whatever imagery a training loader actually
+reads, rather than reconstructing a transform that could drift from it.
 Tiles to rasterize can come from a full AOI-wide scan of an already-fetched
 imagery directory (the default - what Mask2Former training needs) or be
 restricted to one pinned `ManifestBundle`'s tiles (`--manifest`, for a
@@ -320,7 +320,7 @@ class LidarElevationClient {
   +identify(lon, lat) float
 }
 class GroundTruthBuilder {
-  +rasterize(streets, tile) PanopticLabel
+  +rasterize(streets, tile, width, height, transform) PanopticLabel
 }
 class LocalFrame {
   +float origin_lat
@@ -400,8 +400,6 @@ ManifestBuilder ..> CSJStreetsClient : uses
 ManifestBuilder ..> LocalFrame : uses
 ManifestBuilder ..> TubeModel : uses
 ManifestBuilder --> LandmarkManifest : creates
-GroundTruthBuilder ..> CSJStreetsClient : uses
-GroundTruthBuilder ..> ArcGISTileClient : uses
 GroundTruthBuilder ..> LocalFrame : uses
 ArcGISCatalog ..> ArcGISTileClient : resolves service URL for
 ArcGISCatalog ..> CSJStreetsClient : resolves layer URL for
