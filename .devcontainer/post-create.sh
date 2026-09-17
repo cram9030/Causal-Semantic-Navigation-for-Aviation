@@ -15,6 +15,32 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # no-op on an already-correct volume, so it self-heals on every rebuild.
 sudo chown -R "$(id -u):$(id -g)" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
+# The `claude-code` and `node` dev container features both run as root
+# during image build, before `remoteUser: vscode` takes effect. The node
+# feature's own installs (npm, corepack, yarn) end up owned by vscode, but
+# `npm install -g @anthropic-ai/claude-code` (run by the claude-code
+# feature, and by pnpm alongside it) leaves its package directory under the
+# global node_modules root owned by root:nvm with no group-write bit. vscode
+# is in the nvm group but can only read/execute, not write, so Claude Code's
+# self-update (`npm install -g` into that same directory) fails with
+# "Auto-update failed: no write permission to npm prefix". Re-owning the
+# global node_modules tree here runs after the feature installs and is a
+# no-op once it's already vscode-owned, so it self-heals on every rebuild.
+npm_global_modules="$(npm root -g)"
+if [ -n "${npm_global_modules}" ] && [ -d "${npm_global_modules}" ]; then
+    sudo chown -R "$(id -u):$(id -g)" "${npm_global_modules}"
+fi
+
+# Default `git commit` (no -m) to opening its message in VS Code and
+# blocking until that tab is closed, instead of falling back to $EDITOR/vi
+# inside the integrated terminal. `code` is put on PATH by the VS Code
+# Server itself, so this can't be set in the Dockerfile (the server, and
+# its remote-cli, don't exist yet at image build time). Global git config
+# lives in the container's home directory, which isn't volume-mounted like
+# CLAUDE_CONFIG_DIR above, so it doesn't survive a rebuild on its own -
+# re-set it here every time so it self-heals the same way.
+git config --global core.editor "code --wait"
+
 # `dev`  - test/lint tooling (pytest, responses)
 # `viz`  - Phase 1 visualization (matplotlib, folium); the trajectory/tube/
 #          manifest figures and maps, and the tests that render them

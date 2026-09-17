@@ -22,6 +22,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # work out of the box.
 # build-essential: needed to build native extensions (e.g. custom CUDA/C++
 # ops some segmentation model implementations ship as source).
+# tmux: terminal multiplexer for long-running/unattended sessions (e.g.
+# detaching from an agentic `claude` session without killing it).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-venv \
@@ -35,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         sudo \
         build-essential \
+        tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user: required so the container can be run with
