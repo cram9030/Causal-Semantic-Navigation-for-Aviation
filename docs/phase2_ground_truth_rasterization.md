@@ -28,6 +28,55 @@ As with Phases 0/1, this lives under `src/csnav/` as `csnav.data.ground_truth`
 rather than a separate top-level `data/ground_truth/` tree - one installable
 package (see integration plan §6's "Implementation note").
 
+## Refreshing after an upstream fix: the required order
+
+This pipeline is four separate scripts, each of which happily keeps reading
+or reusing whatever it already has on disk unless told otherwise. **Fixing
+something upstream (a street layer/filter pin, a rasterization bug) does
+*nothing* to any of the downstream files already on disk** - each of the
+following has to be re-run in order, every time, or you'll keep looking at
+stale output and conclude the fix didn't work:
+
+1. **`scripts/fetch_csj_streets.py`** - re-fetch the streets GeoJSON itself.
+   Nothing else in this pipeline ever calls this for you. If you're pointing
+   `build_ground_truth.py` at an already-existing `--streets-geojson` file
+   (e.g. `data/raw/csj_streets/downtown.geojson` from a previous pull), a
+   layer/filter fix changes *nothing* about that file's contents until you
+   explicitly re-fetch it. Check the fetch run's own log line
+   (`"queried N feature(s)"` from the ArcGIS response, or just diff the
+   file) - don't assume a code/config change retroactively updates data
+   already sitting on disk.
+2. **`scripts/build_ground_truth.py --overwrite`** - re-rasterize labels
+   from that fresh GeoJSON. Without `--overwrite`, a tile whose label file
+   already exists is left as-is (`if raster_path.exists() and not
+   args.overwrite: skip`) - so even a genuinely fresh streets pull won't
+   change anything already rasterized. Its own log line
+   (`"loaded N street segments from ..."`) is worth checking too: a
+   filtered pull should load noticeably fewer segments than an unfiltered
+   one (CSJ's Streets layer's non-`StreetCenterline` `FEATURECLASS` values
+   are the majority of its schema - see "Reference: the `Streets` layer
+   schema" below).
+3. **`scripts/visualize_ground_truth.py --overwrite`** - re-render the
+   review map and QA gallery from those fresh labels. This is the step
+   that's easy to miss: the gallery's own resumability feature (skip a tile
+   whose 3 PNGs already exist, so a huge run can be safely re-invoked to
+   pick up where it left off) has **no way to know the underlying label
+   changed** - it only checks file existence, never content. Point it at
+   the same `--gallery-dir` you've used before, without `--overwrite`, and
+   you will keep seeing images rendered from whatever labels existed the
+   *first* time that directory was written to - possibly including a
+   partially-written image from a run that was killed mid-write (this
+   pipeline's own SIGKILL incident, see "Memory" below), which looks
+   exactly like a rendering bug from the browser and has nothing to do with
+   whatever was just fixed upstream. `visualize_ground_truth.py` logs a
+   warning when it detects this situation (a `--gallery-dir` with existing
+   images and no `--overwrite`) - if you see it, that's the reason.
+
+Skipping straight to step 3 after fixing something in steps 1-2 (or
+skipping step 1 and only re-running step 2 with `--overwrite`, pointed at
+an unchanged `--streets-geojson`) is the single most common way this
+pipeline's output looks unchanged after a real fix landed.
+
 ## Design decisions worth knowing
 
 ### Two classes, matching the manifest's own split

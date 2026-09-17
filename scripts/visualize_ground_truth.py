@@ -49,6 +49,17 @@ accumulates every tile any run has ever rendered into it (via a
 smaller follow-up selection still leaves everything from a larger earlier
 run visible rather than dropping it from the page.
 
+**This resumability cuts both ways**: the skip-if-exists check has no way
+to tell that ``--labels-dir``'s data changed since a tile's 3 PNGs were
+last written - only that they exist. Re-running against the same
+``--gallery-dir`` after rebuilding the labels upstream (a streets re-fetch,
+a rasterization fix) without ``--overwrite`` will silently keep showing the
+*old* images - this script logs a warning when it detects an existing
+``--gallery-dir`` with no ``--overwrite`` passed, precisely because this
+has already been mistaken for a rendering bug once. See
+``docs/phase2_ground_truth_rasterization.md``'s "Refreshing after an
+upstream fix" section for the full sequence this fits into.
+
 Example (whole label set)::
 
     uv run python scripts/visualize_ground_truth.py \\
@@ -193,6 +204,20 @@ def main() -> None:
 
     if args.gallery_dir is not None:
         from csnav.viz.ground_truth_gallery import build_gallery
+
+        images_dir = args.gallery_dir / "images"
+        if not args.overwrite and images_dir.exists() and any(images_dir.iterdir()):
+            logger.warning(
+                "%s already has rendered images from a previous run. Without --overwrite, any "
+                "tile whose 3 output files already exist is left exactly as it was rendered "
+                "before - NOT re-rendered from --labels-dir's current data. If --labels-dir was "
+                "rebuilt since this gallery directory was last written (a streets re-fetch, a "
+                "rasterization fix, anything upstream), this run will silently keep showing the "
+                "old images unless you pass --overwrite or point --gallery-dir at a new, empty "
+                "directory. See docs/phase2_ground_truth_rasterization.md's \"Refreshing after an "
+                "upstream fix\" section.",
+                args.gallery_dir,
+            )
 
         counts = {"matched": 0, "missing": 0}
         index = build_gallery(

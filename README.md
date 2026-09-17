@@ -475,6 +475,29 @@ per-instance metadata (segment id/name/width, whether the width fell back to
 a default) - close enough to COCO panoptic's own shape that converting to it
 later shouldn't need much.
 
+**Refreshing after any upstream change (a streets layer/filter fix, a
+rasterization change) needs all three steps below, in order, every time** -
+none of them re-run an earlier one for you, so re-running only the last
+step just re-renders whatever the earlier steps already produced:
+
+1. `fetch_csj_streets.py` - re-fetch the streets GeoJSON itself (nothing
+   below reads CSJ live).
+2. `build_ground_truth.py --overwrite` - re-rasterize from that fresh
+   GeoJSON (without `--overwrite`, a tile whose label already exists on
+   disk is left as-is).
+3. `visualize_ground_truth.py --overwrite` - re-render the map/gallery from
+   those fresh labels (without `--overwrite`, a tile whose 3 gallery PNGs
+   already exist is left as-is too - the gallery has no way to know the
+   label data changed, only that a same-named file is already there). This
+   step's own resumability is what a full-AOI, hundreds-of-thousands-of-tile
+   run needs to be safely re-invocable, but it means skipping `--overwrite`
+   here after steps 1-2 will leave you looking at stale images and
+   wondering why the fix didn't work.
+
+Full explanation in
+[`docs/phase2_ground_truth_rasterization.md`](docs/phase2_ground_truth_rasterization.md)'s
+"Refreshing after an upstream fix" section.
+
 ### Building a label set
 
 ```bash

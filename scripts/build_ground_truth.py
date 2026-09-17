@@ -25,7 +25,14 @@ Street geometry always comes from an archived GeoJSON pull
 (``--streets-geojson``, e.g. written by ``scripts/fetch_csj_streets.py``),
 never a live query - CSJ Streets refreshes weekly and ground truth for a
 given imagery vintage should stay pinned to the street network as it stood
-when that vintage was flown/captured. Pairing older imagery with a matching
+when that vintage was flown/captured. **This script never re-fetches that
+file itself** - if ``fetch_csj_streets.py``'s own layer/filter defaults
+change, an already-downloaded ``--streets-geojson`` is untouched until you
+explicitly re-run it; pointing ``--overwrite`` here at a stale file just
+re-rasterizes the same (stale) street data. See
+``docs/phase2_ground_truth_rasterization.md``'s "Refreshing after an
+upstream fix" section for the full fetch -> build -> visualize sequence.
+Pairing older imagery with a matching
 historic street snapshot (rather than today's network) is what
 ``fetch_csj_streets.py --historic-moment`` is for, where the live layer turns
 out to support it - see `docs/phase2_ground_truth_rasterization.md`.

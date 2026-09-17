@@ -147,6 +147,47 @@ def test_visualize_ground_truth_gallery_resumes_by_default(tmp_path, imagery_dir
     assert an_image.stat().st_mtime_ns > first_mtime
 
 
+def test_visualize_ground_truth_warns_when_reusing_a_gallery_dir_without_overwrite(
+    tmp_path, imagery_dir, labels_dir, monkeypatch, caplog
+):
+    """A real incident: labels were rebuilt (a streets re-fetch, a rasterization fix) but the
+    gallery was re-run against the same --gallery-dir without --overwrite, so it silently kept
+    showing images rendered from the *old* labels - indistinguishable, from the browser, from a
+    genuine rendering bug. This must be surfaced as a warning, not left silent.
+    """
+    gallery_dir = tmp_path / "gallery"
+
+    with caplog.at_level("WARNING"):
+        _run(
+            vgt,
+            ["--labels-dir", str(labels_dir), "--imagery-dir", str(imagery_dir), "--gallery-dir", str(gallery_dir)],
+            monkeypatch,
+        )
+    assert "already has rendered images" not in caplog.text  # nothing to be stale yet, first run
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        _run(
+            vgt,
+            ["--labels-dir", str(labels_dir), "--imagery-dir", str(imagery_dir), "--gallery-dir", str(gallery_dir)],
+            monkeypatch,
+        )
+    assert "already has rendered images" in caplog.text
+    assert "--overwrite" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        _run(
+            vgt,
+            [
+                "--labels-dir", str(labels_dir), "--imagery-dir", str(imagery_dir),
+                "--gallery-dir", str(gallery_dir), "--overwrite",
+            ],
+            monkeypatch,
+        )
+    assert "already has rendered images" not in caplog.text  # --overwrite means it's not stale
+
+
 def test_visualize_ground_truth_sample_restricts_gallery_tile_count(tmp_path, imagery_dir, labels_dir, monkeypatch):
     gallery_dir = tmp_path / "gallery"
     _run(
