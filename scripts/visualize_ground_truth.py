@@ -83,6 +83,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -94,12 +95,50 @@ from csnav.data.ground_truth.labels import PanopticLabel  # noqa: E402
 logger = logging.getLogger("visualize_ground_truth")
 
 
+#: Matches `scripts/build_ground_truth.py`'s own ``{level}_{row}_{col}`` tile stem naming.
+_TILE_STEM = re.compile(r"^(\d+)_(\d+)_(\d+)$")
+
+
+def _tile_sort_key(path: Path) -> tuple[int, int, int, str]:
+    """Sort key for a tile sidecar path: numeric ``(level, row, col)`` where the stem parses as
+    one, the raw name otherwise (defensive - every stem this pipeline writes parses).
+
+    Plain string sorting of ``{level}_{row}_{col}.json`` is not a numeric sort - unpadded
+    numbers compare wrong (``"19_1_1"`` sorts before ``"21_1_1"`` only by luck of the leading
+    digit, and a mix of zoom levels/regions in one ``--labels-dir`` can otherwise put an
+    unrelated run of tiles first for no reason connected to their actual level/position). This
+    only changes *order*, not which tiles are includable - see `_paths_with_imagery` for the
+    fix that actually matters when a labels directory has outgrown its imagery.
+    """
+    match = _TILE_STEM.match(path.stem)
+    if match is None:
+        return (-1, -1, -1, path.stem)
+    level, row, col = (int(group) for group in match.groups())
+    return (level, row, col, "")
+
+
 def _sidecar_paths(labels_dir: Path) -> list[Path]:
     """Every label's ``.json`` sidecar path under ``labels_dir``, sorted - cheap: no rasters opened."""
-    paths = sorted(labels_dir.glob("*.json"))
+    paths = sorted(labels_dir.glob("*.json"), key=_tile_sort_key)
     if not paths:
         raise SystemExit(f"no labels found under {labels_dir}")
     return paths
+
+
+def _paths_with_imagery(paths: list[Path], imagery_dir: Path) -> list[Path]:
+    """``paths`` narrowed to those with a matching imagery file under ``imagery_dir``.
+
+    Existence checks only (no raster reads) - the same check `_iter_gallery_pairs` already
+    does lazily per tile, just done eagerly here, before `_select` commits to a specific
+    ``--limit``/``--sample`` subset. Without this, a gallery's selection is drawn from
+    *every* label in ``--labels-dir`` regardless of whether imagery for it still exists - and a
+    labels directory that has outgrown or outlived the imagery it was built against (rebuilt
+    against a narrower ``--imagery-dir``, or carrying tiles from an earlier, larger/different
+    pull) can leave `--limit N` picking N tiles that will *never* render, failing with "no label
+    had matching imagery" even though plenty of renderable tiles exist elsewhere in the set -
+    a real incident, see docs/phase2_ground_truth_rasterization.md.
+    """
+    return [path for path in paths if (imagery_dir / f"{path.stem}.tif").exists()]
 
 
 def _select(paths: list[Path], limit: int | None, sample: int | None) -> list[Path]:
@@ -176,29 +215,35 @@ def main() -> None:
         raise SystemExit("pass at least one of --map / --gallery-dir")
 
     all_paths = _sidecar_paths(args.labels_dir)
-    paths = _select(all_paths, args.limit, args.sample)
-    logger.info("%d label(s) selected from %s (%d total)", len(paths), args.labels_dir, len(all_paths))
+
     #: Past this many tiles, both outputs stop being practical regardless of
     #: Python-side memory: the map's own feature count and the gallery's
     #: per-tile DOM/file count are what run out next. Not a hard limit -
     #: just a nudge toward --sample/--manifest before spending the time.
     LARGE_SELECTION_WARNING_THRESHOLD = 500
-    if args.limit is None and args.sample is None and len(paths) > LARGE_SELECTION_WARNING_THRESHOLD:
-        logger.warning(
-            "%d tiles selected with no --limit/--sample. At this scale: the review map holds every "
-            "tile's vectorized geometry in one map (can still exhaust memory, and no browser can "
-            "usefully render millions of features anyway); the gallery writes 3 files per tile (can "
-            "mean hundreds of thousands of files on disk) and embeds one entry per tile in a single "
-            "HTML page a browser can't render at very large counts either. Consider --sample N for a "
-            "human-reviewable subset, or build/visualize a --manifest-scoped label set instead if you "
-            "want a specific trajectory's coverage rather than every training tile.",
-            len(paths),
-        )
+
+    def _warn_if_unbounded_and_large(destination: str, selected: list[Path]) -> None:
+        if args.limit is None and args.sample is None and len(selected) > LARGE_SELECTION_WARNING_THRESHOLD:
+            logger.warning(
+                "%d tiles selected for the %s with no --limit/--sample. At this scale: the review "
+                "map holds every tile's vectorized geometry in one map (can still exhaust memory, "
+                "and no browser can usefully render millions of features anyway); the gallery "
+                "writes 3 files per tile (can mean hundreds of thousands of files on disk) and "
+                "embeds one entry per tile in a single HTML page a browser can't render at very "
+                "large counts either. Consider --sample N for a human-reviewable subset, or "
+                "build/visualize a --manifest-scoped label set instead if you want a specific "
+                "trajectory's coverage rather than every training tile.",
+                len(selected), destination,
+            )
 
     if args.map is not None:
         from csnav.viz.ground_truth_view import ground_truth_review_map, save_ground_truth_map
 
-        fmap = ground_truth_review_map(_iter_labels(paths))
+        map_paths = _select(all_paths, args.limit, args.sample)
+        logger.info("%d label(s) selected for the map from %s (%d total)", len(map_paths), args.labels_dir, len(all_paths))
+        _warn_if_unbounded_and_large("map", map_paths)
+
+        fmap = ground_truth_review_map(_iter_labels(map_paths))
         path = save_ground_truth_map(fmap, args.map)
         logger.info("wrote review map to %s", path)
 
@@ -219,9 +264,34 @@ def main() -> None:
                 args.gallery_dir,
             )
 
+        # Filter to imagery-backed tiles *before* --limit/--sample commits to a subset - a
+        # labels_dir that has outgrown or outlived --imagery-dir's current tile set (rebuilt
+        # against a narrower/different pull, tiles left over from an earlier run) must not let
+        # --limit N pick N tiles that can never render (see _paths_with_imagery's docstring).
+        gallery_candidates = _paths_with_imagery(all_paths, args.imagery_dir)
+        if len(gallery_candidates) < len(all_paths):
+            logger.warning(
+                "%d of %d label(s) under %s have no matching imagery file under %s - most likely "
+                "leftover from an earlier build against different/wider imagery. They are excluded "
+                "from the gallery's --limit/--sample selection entirely (so a limited run always "
+                "picks from tiles that can actually render), but they still count toward "
+                "check_ground_truth.py's totals and warnings. Consider a clean rebuild of "
+                "--labels-dir if that number is large - see "
+                "docs/phase2_ground_truth_rasterization.md's \"Refreshing after an upstream fix\" "
+                "section.",
+                len(all_paths) - len(gallery_candidates), len(all_paths), args.labels_dir, args.imagery_dir,
+            )
+
+        gallery_paths = _select(gallery_candidates, args.limit, args.sample)
+        logger.info(
+            "%d label(s) selected for the gallery from %s (%d total, %d with matching imagery)",
+            len(gallery_paths), args.labels_dir, len(all_paths), len(gallery_candidates),
+        )
+        _warn_if_unbounded_and_large("gallery", gallery_paths)
+
         counts = {"matched": 0, "missing": 0}
         index = build_gallery(
-            _iter_gallery_pairs(paths, args.imagery_dir, counts), args.gallery_dir, overwrite=args.overwrite
+            _iter_gallery_pairs(gallery_paths, args.imagery_dir, counts), args.gallery_dir, overwrite=args.overwrite
         )
         if counts["matched"] == 0:
             raise SystemExit(f"no label had matching imagery under {args.imagery_dir}")

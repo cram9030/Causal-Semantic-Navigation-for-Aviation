@@ -491,9 +491,14 @@ in *one* map, so it still needs every tile's vectorized features (much
 smaller than the rasters they came from, but not free) resident at once.
 `scripts/visualize_ground_truth.py --limit N` / `--sample N` scope a run
 down to N tiles (respectively: the first N by tile key, or N evenly spread
-across the whole sorted set) when even that doesn't fit - the flags apply to
-both the map and the gallery in one run, though the gallery rarely needs
-them.
+across the whole sorted set) when even that doesn't fit. Tile keys sort
+numerically by `(level, row, col)`, not as plain strings - a mix of zoom
+levels in one `--labels-dir` would otherwise put a run of tiles first for
+reasons unrelated to their actual level/position. The map and the gallery
+apply the selection to two different pools, though: the map's `N` comes
+from every label in `--labels-dir`, but the gallery's `N` comes only from
+labels that currently have a matching file under `--imagery-dir` - see
+"`--labels-dir` can outgrow `--imagery-dir`" below for why.
 
 ### Gallery: a re-run with a smaller/different selection must not drop tiles
 
@@ -520,6 +525,54 @@ smaller/differently-scoped selection (a smaller `--limit`, a different
 *refreshes* the page, never silently shrinks it. `--overwrite` still forces
 a fresh render of a given tile's images; it does not remove any other
 tile's entry from the manifest.
+
+### `--labels-dir` can outgrow `--imagery-dir`, and `build_ground_truth.py` never prunes for it
+
+A real incident, found the hard way on an actual ~260,000-tile
+`data/ground_truth/current`: over a long debugging session spanning
+several different imagery pulls (different bboxes, different zoom levels),
+`--labels-dir` had accumulated far more label files than the *current*
+`--imagery-dir` had tiles for - concretely, 259,777 labels against 36,851
+current imagery tiles, with **222,926 (85.8%) having no matching imagery
+file at all**. `build_ground_truth.py` only ever enumerates tiles from
+whatever `--imagery-dir` currently holds (`_tiles_from_imagery_dir`) and
+writes/overwrites *those* - it has no code path that deletes a label file
+for a tile outside that enumeration, no matter how many times `--overwrite`
+is passed. So a labels directory reused across several different
+imagery/bbox pulls just keeps growing a pile of orphaned label files that
+nothing in this pipeline will ever clean up automatically.
+
+This caused two distinct, confusing symptoms downstream:
+
+- **`check_ground_truth.py`'s warning count didn't budge** after a real
+  upstream fix (a corrected streets filter), because it scans the *entire*
+  `--labels-dir` - 85.8% of which was untouched, unrelated leftover data
+  from before the fix existed, and always would be under this workflow.
+- **`visualize_ground_truth.py --limit 500` failed with "no label had
+  matching imagery"**, even though the label set as a whole had plenty of
+  renderable tiles. Sorted tile keys had mixed zoom levels in them (the
+  orphaned tiles were an older level, e.g. 19; the current imagery was
+  entirely a newer level, e.g. 21), so the first-500-by-tile-key slice
+  landed entirely among the orphaned, unrenderable tiles.
+
+Fixed on the selection side (`_paths_with_imagery` in
+`scripts/visualize_ground_truth.py`): the gallery's `--limit`/`--sample`
+now draws only from labels that currently have a matching imagery file,
+computed *before* the limit/sample cut is applied - so a limited gallery
+run can never land entirely among orphaned tiles, regardless of how many
+exist elsewhere in `--labels-dir`. A warning names exactly how many labels
+were excluded this way, so the orphan pile itself is visible even when the
+gallery run otherwise succeeds.
+
+**This does not fix `check_ground_truth.py`**, which still scans
+everything under `--labels-dir` by design (it is meant to audit the whole
+set, not a convenient subset) - an orphaned-label pile will keep inflating
+its warning counts until `--labels-dir` is cleaned. There is no
+`--prune`/cleanup flag for this (deliberately not built speculatively -
+ask if this keeps happening in practice); the direct fix is to delete and
+rebuild `--output-dir` from scratch once `--imagery-dir` has settled on its
+final scope, rather than reusing one `--output-dir` across genuinely
+different imagery pulls.
 
 ## Running the tests
 

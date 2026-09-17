@@ -238,6 +238,55 @@ def test_sidecar_paths_lists_every_label_sorted(labels_dir):
     assert paths == sorted(paths)
 
 
+def test_sidecar_paths_sorts_numerically_not_as_strings(tmp_path):
+    """A mix of zoom levels/unpadded row-col numbers must sort by (level, row, col) as
+    integers - plain string sorting would put "9_1_1" after "10_1_1" and "19_..." before
+    "21_...", exactly the ordering bug that let a --limit selection land entirely among stale,
+    unrelated tiles in a real incident (see docs/phase2_ground_truth_rasterization.md).
+    """
+    for stem in ["21_1_1", "9_1_1", "19_2_2", "9_10_1"]:
+        (tmp_path / f"{stem}.json").write_text("{}")
+    paths = vgt._sidecar_paths(tmp_path)
+    assert [path.stem for path in paths] == ["9_1_1", "9_10_1", "19_2_2", "21_1_1"]
+
+
+def test_paths_with_imagery_excludes_labels_with_no_matching_tile(tmp_path):
+    imagery_dir = tmp_path / "imagery"
+    imagery_dir.mkdir()
+    (imagery_dir / "18_1_1.tif").write_bytes(b"")
+    paths = [Path(tmp_path / "18_1_1.json"), Path(tmp_path / "18_1_2.json")]
+    assert vgt._paths_with_imagery(paths, imagery_dir) == [paths[0]]
+
+
+def test_gallery_limit_skips_orphaned_labels_with_no_imagery(tmp_path, imagery_dir, labels_dir, monkeypatch):
+    """Real incident regression test: a labels_dir that outgrew its imagery_dir left a pile of
+    orphaned label files (an earlier/different imagery pull) sorting before the tiles that
+    still have matching imagery. --limit must draw only from tiles that can actually render,
+    not fail with "no label had matching imagery" just because the orphans sort first.
+    """
+    import shutil
+
+    # An orphaned label at a much lower tile level than the real fixture tiles (level 18) -
+    # sorts first, and has no matching file under imagery_dir.
+    real_json = next(labels_dir.glob("18_100_200.json"))
+    real_tif = real_json.with_suffix(".tif")
+    shutil.copy(real_json, labels_dir / "1_1_1.json")
+    shutil.copy(real_tif, labels_dir / "1_1_1.tif")
+
+    gallery_dir = tmp_path / "gallery"
+    _run(
+        vgt,
+        [
+            "--labels-dir", str(labels_dir), "--imagery-dir", str(imagery_dir),
+            "--gallery-dir", str(gallery_dir), "--limit", "1",
+        ],
+        monkeypatch,
+    )
+    html = (gallery_dir / "index.html").read_text(encoding="utf-8")
+    assert '"stem": "1_1_1"' not in html
+    assert html.count('"stem":') == 1
+
+
 def test_select_with_limit_takes_the_first_n():
     paths = [Path(f"{i}.json") for i in range(10)]
     assert vgt._select(paths, limit=3, sample=None) == paths[:3]
