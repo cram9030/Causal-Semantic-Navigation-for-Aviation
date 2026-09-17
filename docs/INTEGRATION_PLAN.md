@@ -305,6 +305,7 @@ classDiagram
 class ArcGISCatalog {
   +discover_services(name_contains, service_types) List
   +find_layer(layer_name_contains, service_name_contains) str
+  +find_layers(layer_name_contains, service_name_contains) List
 }
 class ArcGISTileClient {
   +fetch_tile(level, row, col) bytes
@@ -312,6 +313,7 @@ class ArcGISTileClient {
 }
 class CSJStreetsClient {
   +query(bbox, where) List~StreetSegment~
+  +query_distinct_values(field, where, bbox) List
 }
 class LidarElevationClient {
   +read_window(bbox, width, height) ReprojectedTile

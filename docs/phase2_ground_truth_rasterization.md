@@ -28,54 +28,166 @@ As with Phases 0/1, this lives under `src/csnav/` as `csnav.data.ground_truth`
 rather than a separate top-level `data/ground_truth/` tree - one installable
 package (see integration plan §6's "Implementation note").
 
-## Refreshing after an upstream fix: the required order
+## Running it
 
-This pipeline is four separate scripts, each of which happily keeps reading
-or reusing whatever it already has on disk unless told otherwise. **Fixing
-something upstream (a street layer/filter pin, a rasterization bug) does
-*nothing* to any of the downstream files already on disk** - each of the
-following has to be re-run in order, every time, or you'll keep looking at
-stale output and conclude the fix didn't work:
+### The default: DVC
 
-1. **`scripts/fetch_csj_streets.py`** - re-fetch the streets GeoJSON itself.
-   Nothing else in this pipeline ever calls this for you. If you're pointing
-   `build_ground_truth.py` at an already-existing `--streets-geojson` file
-   (e.g. `data/raw/csj_streets/downtown.geojson` from a previous pull), a
-   layer/filter fix changes *nothing* about that file's contents until you
-   explicitly re-fetch it. Check the fetch run's own log line
-   (`"queried N feature(s)"` from the ArcGIS response, or just diff the
-   file) - don't assume a code/config change retroactively updates data
-   already sitting on disk.
-2. **`scripts/build_ground_truth.py --overwrite`** - re-rasterize labels
-   from that fresh GeoJSON. Without `--overwrite`, a tile whose label file
-   already exists is left as-is (`if raster_path.exists() and not
-   args.overwrite: skip`) - so even a genuinely fresh streets pull won't
-   change anything already rasterized. Its own log line
-   (`"loaded N street segments from ..."`) is worth checking too: a
-   filtered pull should load noticeably fewer segments than an unfiltered
-   one (CSJ's Streets layer's non-`StreetCenterline` `FEATURECLASS` values
-   are the majority of its schema - see "Reference: the `Streets` layer
-   schema" below).
-3. **`scripts/visualize_ground_truth.py --overwrite`** - re-render the
-   review map and QA gallery from those fresh labels. This is the step
-   that's easy to miss: the gallery's own resumability feature (skip a tile
-   whose 3 PNGs already exist, so a huge run can be safely re-invoked to
-   pick up where it left off) has **no way to know the underlying label
-   changed** - it only checks file existence, never content. Point it at
-   the same `--gallery-dir` you've used before, without `--overwrite`, and
-   you will keep seeing images rendered from whatever labels existed the
-   *first* time that directory was written to - possibly including a
-   partially-written image from a run that was killed mid-write (this
-   pipeline's own SIGKILL incident, see "Memory" below), which looks
-   exactly like a rendering bug from the browser and has nothing to do with
-   whatever was just fixed upstream. `visualize_ground_truth.py` logs a
-   warning when it detects this situation (a `--gallery-dir` with existing
-   images and no `--overwrite`) - if you see it, that's the reason.
+```bash
+uv sync --extra dev --extra dvc --extra viz
+uv run dvc repro build_ground_truth check_ground_truth visualize_ground_truth
+```
 
-Skipping straight to step 3 after fixing something in steps 1-2 (or
-skipping step 1 and only re-running step 2 with `--overwrite`, pointed at
-an unchanged `--streets-geojson`) is the single most common way this
-pipeline's output looks unchanged after a real fix landed.
+`params.yaml`'s `streets.layer_url`/`streets.where` pin the correct CSJ
+Streets layer and filter (see "The CSJ Streets layer and filter" below);
+`ground_truth.vintages` pins each imagery vintage to the street-network
+snapshot that should label it, `foreach`-expanded into one
+`build_ground_truth`/`check_ground_truth`/`visualize_ground_truth` stage
+triple per vintage. `dvc repro` (with no stage names) reruns every stage
+whose script/deps/params changed since the last run, in the right order -
+this is the normal way to run the whole pipeline, including after a
+`params.yaml` edit (a new vintage, a swept `default_width_m`, a corrected
+streets filter). See the top-level README's "Running the pipeline" section
+for `dvc dag`/`dvc exp run`/remote-storage setup shared across every phase.
+
+### Running the scripts directly
+
+Useful for a one-off run outside `--imagery-dir`/`--streets-geojson`'s
+`params.yaml`-pinned paths, or while developing/debugging one stage. These
+three run in this order, every time all three are needed - none of them
+reruns an earlier one for you, so rerunning only the last step just
+re-renders whatever the earlier steps already produced.
+
+**1. Fetch the streets GeoJSON** (skip if reusing an existing, still-current
+pull - see "Keeping a labels directory in sync" below for when it's stale):
+
+```bash
+uv run python scripts/fetch_csj_streets.py \
+    --bbox -121.95 37.30 -121.85 37.36 \
+    --output data/raw/csj_streets/downtown.geojson
+```
+
+No other flags are needed for CSJ San Jose - `--layer-url`/`--where`
+default to the correct, pinned layer and filter (see below).
+
+**2. Rasterize the label set:**
+
+```bash
+uv run python scripts/build_ground_truth.py \
+    --imagery-dir data/raw/dpw_imagery/DPW_ImageryCached2025 \
+    --streets-geojson data/raw/csj_streets/downtown.geojson \
+    --output-dir data/ground_truth/current
+```
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--imagery-dir PATH` | yes | - | Directory of `{level}_{row}_{col}.tif` tiles to label. |
+| `--streets-geojson PATH` | yes | - | An archived pull from `fetch_csj_streets.py`, never a live query - see "Pairing imagery vintages with a matching street network" below. |
+| `--output-dir PATH` | yes | - | Where to write each tile's 2-band GeoTIFF + JSON sidecar. |
+| `--manifest PATH` | no | off | Restrict to one pinned `ManifestBundle`'s tiles instead of every tile under `--imagery-dir` - a smaller regional-sensitivity run rather than the full AOI. |
+| `--default-width-m M` | no | 6.0 | Fallback width for a segment CSJ doesn't publish one for. |
+| `--intersection-radius-m M` | no | 3.0 | Radius a derived intersection is rasterized as. |
+| `--intersection-snap-m M` | no | 2.0 | Clustering tolerance for merging nearby junction points into one intersection instance. |
+| `--overwrite` | no | off | Re-rasterize a tile whose label file already exists. |
+
+**3. Check and visualize:**
+
+```bash
+uv sync --extra dev --extra viz
+
+uv run python scripts/check_ground_truth.py --labels-dir data/ground_truth/current
+
+uv run python scripts/visualize_ground_truth.py \
+    --labels-dir data/ground_truth/current \
+    --imagery-dir data/raw/dpw_imagery/DPW_ImageryCached2025 \
+    --map out/viz_ground_truth/current_map.html \
+    --gallery-dir out/viz_ground_truth/current_gallery
+```
+
+`check_ground_truth.py` (base install only) verifies every label's raster
+matches its own JSON sidecar (shape, every instance id accounted for, no
+orphan pixels) and reports the default-width fallback rate per tile, exiting
+non-zero on any structural error - usable as a CI gate on
+`build_ground_truth`'s output.
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--labels-dir PATH` | yes | - | A `build_ground_truth.py` output directory. |
+| `--default-width-fraction F` | no | 0.5 | Warn on a tile where more than this fraction of its road segments fell back to the default width. |
+| `--default-width-report PATH` | no | off | Stream a CSV of every OBJECTID/name/raw-CSJ-attributes that fell back to the default, across the whole label set. |
+| `--report PATH` | no | off | Write the full structured check report as JSON. |
+
+`visualize_ground_truth.py` (needs the `viz` extra) renders:
+
+- **the review map** (`--map`) - every tile's footprint plus its
+  road/intersection polygons, vectorized straight back out of the label
+  rasters (so it shows exactly what a training loader would read), over San
+  Jose imagery. Road tooltips show the OBJECTID, name, computed width, and
+  every raw CSJ attribute for that segment.
+- **the QA gallery** (`--gallery-dir`) - a self-contained static HTML page
+  for paging through every tile quickly: a thumbnail grid drives a large
+  viewer with two pixel-aligned images (imagery, and a transparent label
+  overlay) under one opacity slider - "imagery only" / "overlay" / "labels
+  only" are all the same slider, nothing extra to render - with arrow-key
+  navigation and a per-tile "flag" checkbox (persisted in the page's own
+  `localStorage`, exportable as a plain text list). The info panel lists
+  every road instance in the current tile (OBJECTID, name, width, whether it
+  fell back to the default) so going from "this tile looks off" to "here's
+  the OBJECTID to check" never needs the map open too.
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--labels-dir PATH` | yes | - | A `build_ground_truth.py` output directory. |
+| `--imagery-dir PATH` | yes | - | The same imagery directory the labels were built against. |
+| `--map PATH` | no | off | Write the review map here. |
+| `--gallery-dir PATH` | no | off | Write the QA gallery here. At least one of `--map`/`--gallery-dir` is required. |
+| `--limit N` | no | off | Only process the first N tiles by tile key (see "Tile selection" below). |
+| `--sample N` | no | off | Only process N tiles, evenly spaced across the sorted set - mutually exclusive with `--limit`. |
+| `--overwrite` | no | off | Force a full re-render even where output files already exist - see "Keeping a labels directory in sync" below for when this matters. |
+
+### Keeping a labels directory in sync
+
+Fetching, building, and visualizing are three independent steps, each of
+which reuses whatever it already has on disk unless told otherwise - so
+each has its own condition for when a fresh run is actually needed:
+
+- **Re-fetch streets** (`fetch_csj_streets.py`) whenever the live CSJ
+  network has changed since the last pull, or the pinned
+  layer/filter/schema itself changed. Nothing downstream re-fetches this
+  for you.
+- **Re-rasterize with `--overwrite`** (`build_ground_truth.py`) whenever
+  `--streets-geojson`'s contents changed - without it, a tile whose label
+  file already exists is left as-is.
+- **Re-render with `--overwrite`** (`visualize_ground_truth.py`) whenever
+  `--labels-dir`'s contents changed - the gallery's resumability (skip a
+  tile whose 3 PNGs already exist, needed for a run spanning hundreds of
+  thousands of tiles) has no way to tell that the underlying label data is
+  different, only that a same-named file is already there. Reusing a
+  `--gallery-dir` without `--overwrite` after rebuilding labels will keep
+  showing the *old* images; this script logs a warning when it detects
+  that situation.
+
+**A `--labels-dir` and its `--imagery-dir` must stay scoped together.**
+`build_ground_truth.py` only ever enumerates tiles from the *current*
+`--imagery-dir` and writes/overwrites those - it never deletes a label file
+for a tile outside that enumeration. Pointing it at a narrower or different
+`--imagery-dir` than a previous run used (a different bbox, a different
+zoom level) leaves the earlier run's tiles sitting in `--output-dir`
+indefinitely, orphaned relative to the current imagery. That has two real
+consequences:
+
+- `check_ground_truth.py` audits the *entire* `--labels-dir`, orphaned
+  tiles included, so its warning counts reflect however much of the
+  directory is actually stale - not just the current imagery scope.
+- `visualize_ground_truth.py`'s `--limit`/`--sample` draw only from labels
+  that currently have a matching imagery file (see "Tile selection" below),
+  so a limited/sampled run stays correct even with orphans present - but
+  `--map` with no `--limit`/`--sample` still processes every label,
+  orphaned or not.
+
+There's no automatic pruning for this (deliberately not built
+speculatively). If `--imagery-dir`'s scope has changed since a
+`--labels-dir` was last built, delete and rebuild `--output-dir` from
+scratch rather than reusing it across genuinely different imagery scopes.
 
 ## Design decisions worth knowing
 
@@ -151,13 +263,11 @@ Two things address this, with one caveat:
   `historicMoment` query parameter, the standard way to read an
   *archiving-enabled* layer as of a past edit moment.
   **This is not confirmed to do anything for CSJ Streets specifically** -
-  whether that layer has server-side archiving enabled hasn't been checked
-  (this codebase's own sandbox can't reach `geo.sanjoseca.gov`; see
-  `docs/phase0_csj_streets_lidar.md` for the same live-service-verification
-  gap on the LIDAR client). Check `CSJStreetsClient.get_metadata()`'s
-  `archivingInfo` field against the real service before relying on it; absent
-  archiving support, the flag has no effect and the current network comes
-  back regardless of the moment requested.
+  whether that layer has server-side archiving enabled hasn't been checked.
+  Check `CSJStreetsClient.get_metadata()`'s `archivingInfo` field against the
+  real service before relying on it; absent archiving support, the flag has
+  no effect and the current network comes back regardless of the moment
+  requested.
 - **Fallback if archiving isn't supported**: source a historic snapshot some
   other way (an external historic CSJ Streets export, or hand-edited
   geometry for a known road change) and point a `ground_truth.vintages` entry
@@ -180,116 +290,91 @@ records whether its width came from CSJ or the fallback
   coverage is thin in that area), not a bug.
 - The gallery surfaces the same count per tile, and the folium map's road
   tooltips mark a fallback-width road explicitly.
+- `scripts/check_ground_truth.py --default-width-report out.csv` streams a
+  CSV of every OBJECTID/name/raw-CSJ-attributes that fell back to the
+  default, across the whole label set (one pass, one row per segment - safe
+  at full-AOI scale) - the tool to reach for if a schema change ever makes
+  `WIDTH_FIELD_CANDIDATES` stop matching again (its `attributes` column
+  shows exactly what CSJ published for that segment, independent of whether
+  any candidate field name matched it).
 
 Like tube radius (CLAUDE.md core decision 4), this is a swept/versioned input
 (`params.yaml`'s `ground_truth.default_width_m`), never a constant baked into
 `rasterize()`'s call site.
 
-**`WIDTH_FIELD_CANDIDATES` started as a guessed lookup list, not a verified
-CSJ schema contract** - none of its original entries were confirmed against
-the live service (this codebase's sandbox can't reach `geo.sanjoseca.gov`).
-While it was missing the real field name, *every* road fell back to the
-flat `default_width_m`, and the visible symptom was roads that all rendered
-at roughly the same width - uniformly too narrow (specifically, like the
-default's "one travel lane each way, no parking", since that's exactly what
-the default is) rather than varying with each street's actual pavement
-width. This happened in practice against a real full-AOI label set, and was
-tracked down to a real, confirmed answer:
+**CSJ's actual field is `FOCWIDTH`** ("face-of-curb width", i.e.
+curb-to-curb), first in `WIDTH_FIELD_CANDIDATES`. The other candidate names
+(`WIDTH`, `ROADWIDTH`, etc.) are kept as fallbacks in case a
+differently-sourced streets layer uses one of them instead.
 
-**CSJ's actual field is `FOCWIDTH`** ("face-of-curb width" - the curb-to-curb
-width), now listed first in `WIDTH_FIELD_CANDIDATES`. The earlier guessed
-names (`WIDTH`, `ROADWIDTH`, etc.) are kept as fallbacks in case a
-differently-sourced streets layer uses one of them, but for the live CSJ
-`Streets` layer, `FOCWIDTH` is the one that actually matches. Three tools
-exist for catching and diagnosing a mismatch like this in the future
-(a schema change, or a new source layer with yet another field name):
+### The CSJ Streets layer and filter
 
-- Every `SegmentInfo` carries the source segment's full raw CSJ
-  `attributes` dict, not just this module's `width_m`/`name` interpretation
-  of it - so it's always possible to see exactly what CSJ published for a
-  given `OBJECTID`, independent of whether `WIDTH_FIELD_CANDIDATES`
-  happened to match it.
-- The folium review map's road tooltips show the OBJECTID and every raw CSJ
-  attribute for that segment (`csnav.viz.ground_truth_view`), and the
-  gallery's per-tile info panel lists every road instance's OBJECTID, name,
-  width, and default-width flag as a small table
-  (`csnav.viz.ground_truth_gallery`) - both let a reviewer go straight from
-  "this looks wrong" to "here's the exact OBJECTID and what CSJ says about
-  it" without leaving the page.
-- `scripts/check_ground_truth.py --default-width-report out.csv` streams a
-  CSV of every OBJECTID/name/raw-attributes that fell back to the default,
-  across the whole label set (one pass, one row per segment - safe at
-  full-AOI scale) - the fastest way to confirm the hypothesis: if that CSV
-  is nearly the whole dataset, and its `attributes` column consistently
-  shows *some* width-shaped field under a name not in
-  `WIDTH_FIELD_CANDIDATES`, that's the fix - add the real field name to the
-  candidates list in `csnav/data/arcgis/streets.py` and rebuild.
+`scripts/fetch_csj_streets.py`'s `DEFAULT_LAYER_URL`/`DEFAULT_WHERE` (and
+`params.yaml`'s matching `streets.layer_url`/`streets.where`, for the DVC
+pipeline) pin this pipeline to:
 
-**Resolved**: CSJ's real field is `FOCWIDTH` ("face-of-curb width", i.e.
-curb-to-curb), now first in `WIDTH_FIELD_CANDIDATES` - confirmed against a
-layer that does carry it. See the caveat about *which* layer that is, right
-below.
+```
+layer:  https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60
+where:  FEATURECLASS='StreetCenterline'
+```
 
-### "Streets" is an ambiguous name in CSJ's catalog
+**"Streets" is an ambiguous substring in CSJ's catalog** - two other layers
+under `OPN/OPN_OpenDataService` also match it, and neither is valid for this
+pipeline: `Underground Designated Streets` (`MapServer/522`) has no width
+field or `FEATURECLASS` at all, and `Paving Moratorium Streets`
+(`MapServer/423`) isn't street centerlines either. That's why `--layer-url`
+is pinned to an explicit URL by default rather than left to name-based
+discovery, which has no way to prefer the right one of three
+similarly-named matches.
 
-`scripts/fetch_csj_streets.py` resolves the layer to query by a name
-substring match (`ArcGISCatalog.find_layer`, first match wins) rather than a
-hardcoded service/layer id, per `docs/phase0_csj_streets_lidar.md`'s
-discovery-over-hardcoding rationale - CSJ's catalog has reorganized this
-before. In practice, more than one layer's name under
-`OPN/OPN_OpenDataService` contains "Streets", and which one `find_layer`'s
-substring match resolves to has already changed between sessions with no
-code change on this side.
+**`MapServer/60` isn't only street centerlines, either** - its
+`FEATURECLASS` field is a domain shared across many feature types on this
+one layer (sanitary-sewer and storm-water infrastructure lines, parcels,
+address points; see the schema reference below), not street-specific.
+`STREETCLASS`/`FUNCTCLASS` are a different axis - they classify *within*
+`StreetCenterline` rows (`AL`: Alley, `DW`: Driveway, `RA`: Ramp are all
+still `StreetCenterline`), not between street and non-street features.
+`FEATURECLASS='StreetCenterline'` is the filter that actually excludes the
+non-street features, which is what "Overlapping/occluding segments" below
+depends on.
 
-Three flags on `scripts/fetch_csj_streets.py` exist specifically to pin this
-down deliberately instead of guessing:
+If the catalog ever reorganizes again (a query error, a suspiciously sparse
+pull, a schema change), three flags on `scripts/fetch_csj_streets.py`
+re-derive the correct layer/field/value without guessing:
 
-- `--list-layers` prints every layer whose name matches
-  `--layer-name-contains` (not just the first), so every "Streets"-ish
-  candidate is visible at once.
-- `--list-fields` (against a layer pinned with `--layer-url`) prints that
-  layer's actual fields - name, type, alias, and every stored code + display
-  label for a coded-value domain field, in full (not truncated the way
-  CSJ's own REST HTML directory page abbreviates a long coded-value list as
-  `...N more...`).
-- `--distinct-values FIELD` prints every value a plain string field (no
-  coded-value domain to read off from metadata alone - e.g. `DESIGNATION`/
+- `--list-layers` - print every layer whose name matches
+  `--layer-name-contains` (not just the first discovery would pick), to
+  compare every "Streets"-ish candidate.
+- `--list-fields` (against a layer pinned with `--layer-url`) - print that
+  layer's fields: name, type, alias, and every stored code + display label
+  for a coded-value domain field, read from the untruncated `?f=json`
+  metadata (CSJ's own REST HTML directory page truncates a long coded-value
+  list as `...N more...`).
+- `--distinct-values FIELD` - print every value a plain string field (no
+  coded-value domain to read off from metadata alone, e.g. `DESIGNATION`/
   `DESCRIPTION`) actually contains.
 
-**Resolved**: `--list-layers` finds exactly 3 matches under
-`OPN/OPN_OpenDataService`:
-
-| Layer name | URL | What it is |
-| --- | --- | --- |
-| `Streets` | `.../MapServer/60` | **The correct one.** Full-attribute street centerlines - has `FOCWIDTH`, `FEATURECLASS`, `STREETCLASS`/`FUNCTCLASS`. 35,811 records, matching the City's own [Open Data page for this layer](https://gisdata-csj.opendata.arcgis.com/datasets/CSJ::streets) record count exactly. |
-| `Underground Designated Streets` | `.../MapServer/522` | The sparser layer a prior session's substring search drifted onto - no width field, no `FEATURECLASS`, fields limited to `OBJECTID`/`FACILITYID`/`INTID`/`CENTERLINEID`/`FULLNAME`/`DESIGNATION`/`DESCRIPTION`/`NOTES`/`LASTUPDATE`/`CREATIONDATE`. Not street centerlines in the sense this pipeline needs. |
-| `Paving Moratorium Streets` | `.../MapServer/423` | Uncharacterized beyond its name - almost certainly not centerlines either. |
-
-`params.yaml`'s `streets.layer_url` now pins `.../MapServer/60` explicitly,
-so a future catalog reorganization can't silently resolve to one of the
-other two again.
+Once a new correct layer/filter is confirmed, update
+`DEFAULT_LAYER_URL`/`DEFAULT_WHERE` in `scripts/fetch_csj_streets.py` and
+`params.yaml`'s `streets.layer_url`/`streets.where` together - both need to
+carry the same values, since the script is also run directly outside the
+DVC pipeline.
 
 ### Reference: the `Streets` layer schema (MapServer/60)
 
 Recorded here so nobody has to re-derive it from the ArcGIS REST directory
-by hand again. Source:
+by hand. Source:
 `https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60`,
 cross-checked against the City's own
 [Open Data page](https://gisdata-csj.opendata.arcgis.com/datasets/CSJ::streets)
-(35,811 records both places; data last updated 2025-04-28, published
-2020-08-27 as of this writing). Display field: `FULLNAME`. Geometry:
+(35,811 records both places). Display field: `FULLNAME`. Geometry:
 `esriGeometryPolyline`. `MaxRecordCount`: 2000 (why `CSJStreetsClient`
 paginates). Supports `returnDistinctValues`/`orderByFields`/pagination -
 what `--distinct-values`/`query_distinct_values` rely on.
 
-Coded-value domains were first captured from the REST *HTML* directory
-view, which truncates long lists as `...N more...`; the table below has
-since been filled in with the untruncated lists from
-`--layer-url https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60 --list-fields`
-(that tool reads the `?f=json` metadata, not the HTML page) - long
-municipality/zip-code lists are still summarized rather than spelled out in
-full here, since they aren't relevant to any filtering decision this
-pipeline makes.
+Long municipality/zip-code lists are summarized rather than spelled out in
+full below, since they aren't relevant to any filtering decision this
+pipeline makes - get the full list with `--list-fields` if needed.
 
 | Field | Type | Alias | Coded values |
 | --- | --- | --- | --- |
@@ -303,15 +388,15 @@ pipeline makes.
 | `FULLNAME` | esriFieldTypeString(125) | Full Street Name | |
 | `ONEWAYDIR` | esriFieldTypeString(10) | One Way Indicator | `P`: From-To, `N`: To-From, `B`: Both |
 | `MODELFLAG` | esriFieldTypeString(1) | Model Flag | `S`: Single, `M`: Median, `D`: Divided |
-| `STREETCLASS` | esriFieldTypeString(20) | Street Class | `FY`: Freeway, `HY`: Highway, `EX`: Expressway, `RA`: Ramp, `MA`: Major Arterial, `MI`: Minor Arterial, `CO`: Collector, `RE`: Residential, `EA`: Easement, `DW`: Driveway, `PA`: Path, `RU`: Rural Access, `AL`: Alley - all 13 are legitimate `StreetCenterline` rows, not something to filter out (see below) |
+| `STREETCLASS` | esriFieldTypeString(20) | Street Class | `FY`: Freeway, `HY`: Highway, `EX`: Expressway, `RA`: Ramp, `MA`: Major Arterial, `MI`: Minor Arterial, `CO`: Collector, `RE`: Residential, `EA`: Easement, `DW`: Driveway, `PA`: Path, `RU`: Rural Access, `AL`: Alley - all 13 are legitimate `StreetCenterline` rows, not something to filter out |
 | `FUNCTCLASS` | esriFieldTypeString(20) | Functional Class | `AR`: Freeway, `CA`: Highway, `LO`: Residential, `MA`: Major Arterial, `NC`: Neighborhood Collector |
 | `SPEEDLIMIT` | esriFieldTypeSmallInteger | Speed Limit | |
 | `PRIVATE` / `OFFICIAL` / `INCORPORATED` | esriFieldTypeString(3) | Private / Official / Incorporated | `Yes`, `No` |
 | `MUNILEFT` / `MUNIRIGHT` | esriFieldTypeString(10) | Municipality on Left/Right | 20 South Bay cities/agencies (`SJ`: San Jose, `SC`: Santa Clara, `CO`: County, ...) |
 | `ZIPLEFT` / `ZIPRIGHT` | esriFieldTypeString(5) | Zip on Left/Right | 67 South Bay ZIP codes |
-| **`FOCWIDTH`** | esriFieldTypeDouble | **FOC Width** | the confirmed width field (feet; face-of-curb, i.e. curb-to-curb) - see "Fallback roadway width" above |
+| **`FOCWIDTH`** | esriFieldTypeDouble | **FOC Width** | the width field this pipeline reads (feet; face-of-curb, i.e. curb-to-curb) - see "Fallback roadway width" above |
 | `ROWWIDTH` | esriFieldTypeDouble | ROW Width | right-of-way width (feet) - wider than `FOCWIDTH`, not currently read by `street_width_m` |
-| **`FEATURECLASS`** | esriFieldTypeString(50) | **Feature Class** | 36 values total - a domain shared citywide across many feature types on this layer, not street-specific: `AddressPoint`, `CondoParcel`, `Parcel`, 14 sanitary-sewer infrastructure values (`ssCasing`, `ssGravityMain`, `ssManhole`, `ssPressurizedMain`, ...), 18 storm-water infrastructure values (`swCulvert`, `swGravityMain`, `swManhole`, `swPressurizedMain`, ...), and **`StreetCenterline`** - the one confirmed value for real street centerlines (see below) |
+| **`FEATURECLASS`** | esriFieldTypeString(50) | **Feature Class** | 36 values total - a domain shared citywide across many feature types on this layer, not street-specific: `AddressPoint`, `CondoParcel`, `Parcel`, 14 sanitary-sewer infrastructure values (`ssCasing`, `ssGravityMain`, `ssManhole`, `ssPressurizedMain`, ...), 18 storm-water infrastructure values (`swCulvert`, `swGravityMain`, `swManhole`, `swPressurizedMain`, ...), and **`StreetCenterline`** - the value this pipeline filters to |
 | `PLANCRT` / `PLANMOD` | esriFieldTypeString(25) | Plan Created/Modified | |
 | `LASTUPDATE` / `CREATIONDATE` | esriFieldTypeDate | Last Update/Creation Date | |
 | `NOTES` | esriFieldTypeString(255) | Notes | |
@@ -322,78 +407,34 @@ pipeline makes.
 | `FHWAFUNCTCLASS` | esriFieldTypeSmallInteger | FHWA Functional Class | `1`: Interstate, `2`: Other Freeway or Expressway, `3`: Other Principal Arterial, `4`: Minor Arterial, `5`: Major Collector, `6`: Minor Collector, `7`: Local |
 | `RESPONSIBILITY` | esriFieldTypeString(10) | Responsible Agency | `SJ`: San Jose, `SC`: Santa Clara, `CO`: County, `ST`: State of California, `US`: Federal, `PR`: Private, ... 8 more agencies |
 
-**Resolved: `FEATURECLASS='StreetCenterline'` is the correct filter.**
-`STREETCLASS`/`FUNCTCLASS` looked like plausible candidates too, but they
-classify *within* `StreetCenterline` rows (alleys, driveways, and ramps are
-still `StreetCenterline` - see the `STREETCLASS` row above), not between
-street and non-street features. `FEATURECLASS` is the field that actually
-separates streets from everything else this layer also carries - notably
-sanitary-sewer and storm-water infrastructure lines (`ss*`/`sw*` values),
-which run close enough to real streets to explain the occlusion this was
-tracked down from (see below).
-
 ### Overlapping/occluding segments
 
 Independent of *which* layer is queried, CSJ's Streets data can mix
-non-street features (ramps, alleys, driveways) in with real street
-centerlines, and those can sit close enough to a real street to spatially
-overlap it once buffered. `rasterize()` burns overlapping polygons in a
-fixed order (currently: alphabetical by `segment_id`/OBJECTID), and
-whichever one is drawn last **completely overwrites** the earlier one's
-pixels in both the semantic and instance bands - so a real street segment
-can end up with zero pixels of its own, entirely replaced by an unrelated
-feature that happened to overlap it and draw afterward. The symptom looks
-exactly like a data-corruption/indexing bug from the map or gallery alone:
-many visibly-distinct road segments all reporting one single, seemingly
-unrelated OBJECTID, at the default width (since the occluding feature is
-often something the width-field logic has no reason to have a sensible
-width for). It is not an indexing bug - reproduced synthetically with many
-overlapping segments and confirmed the OBJECTID pairing itself stays
-correct throughout `rasterize()`; the overlap and one-sided overwrite is
-real.
+non-street features (ramps, alleys, driveways, or - on `MapServer/60`
+specifically - sanitary-sewer/storm-water infrastructure lines) in with
+real street centerlines, and those can sit close enough to a real street to
+spatially overlap it once buffered. `rasterize()` burns overlapping
+polygons in a fixed order (currently: alphabetical by `segment_id`/
+OBJECTID), and whichever one is drawn last **completely overwrites** the
+earlier one's pixels in both the semantic and instance bands - so a real
+street segment can end up with zero pixels of its own, entirely replaced by
+an unrelated feature that happened to overlap it and draw afterward. The
+symptom looks like a data-corruption/indexing bug from the map or gallery
+alone: a visibly-distinct road segment reporting an unrelated OBJECTID, at
+the default width. It is not an indexing bug - the OBJECTID pairing itself
+stays correct throughout `rasterize()`; the overlap and one-sided overwrite
+is real geometry.
 
-**Resolved: filtering at the query, not after rasterizing.**
-`params.yaml`'s `streets.where` pins
-`"FEATURECLASS='StreetCenterline'"` against the confirmed `MapServer/60`
-layer, so non-street features (sanitary-sewer/storm-water infrastructure
-lines, parcels, address points) are excluded before they ever reach
-`rasterize()` - nothing is left to occlude a real street with. Getting
-here took two guesses: the first guessed field names (`WIDTH`, etc. -
-see "Fallback roadway width") before `FOCWIDTH` was confirmed, and the
-first guessed *layer* (`MapServer/522`, which a substring-match discovery
-resolved to at the time) before `MapServer/60` was confirmed as the
-correct one - a `FEATURECLASS='StreetCenterline'` filter that had looked
-right in isolation caused an ArcGIS query error the moment it was pointed
-at the wrong layer, which is exactly the failure mode `--list-layers`/
-`--list-fields`/`--distinct-values` exist to catch before a filter is
-trusted again.
-
-**A third guess turned out to be about which _script_ picks this up.**
-Pinning the layer/filter only in `params.yaml` fixed the `dvc repro`
-pipeline path, but `scripts/fetch_csj_streets.py` is also run directly
-(e.g. `--bbox ... --output data/raw/csj_streets/downtown.geojson`, as this
-doc's own examples show) - a path that never reads `params.yaml` at all. A
-real re-pull done this way, after the `params.yaml` fix above, still came
-back with the same wrong-OBJECTID/mass-default-width symptoms, because the
-script's own `--layer-url`/`--where` CLI defaults hadn't changed (still
-`None`/discovery and `"1=1"`). `DEFAULT_LAYER_URL`/`DEFAULT_WHERE` in
-`scripts/fetch_csj_streets.py` now carry the same confirmed values as the
-script's own defaults, so a direct invocation with no flags at all gets the
-correct layer/filter too - `params.yaml` only needs to repeat them for
-`dvc.yaml`'s benefit, not to be the sole place they're pinned. Passing
-`--layer-url ""` still falls back to substring discovery, and an explicit
-`--where` still overrides the default, for re-pinning after a future
-catalog reorganization.
-
-**This applies to Phase 1 landmark manifests too**, not just ground truth:
-`scripts/build_manifests.py --streets-geojson` reads the exact same pinned
-export, so a manifest built from a pre-fix (unfiltered) pull has the same
-contamination in its candidate-road set and should be rebuilt from a fresh
-`fetch_csj_streets` pull. `check_label`'s "OBJECTID(s) never rasterized,
-occluded by an overlapping segment" warning (and the matching entry in
-`--report`'s JSON) remains a safety net either way - it should be rare now,
-not an every-tile occurrence, and a resurgence of it is a signal this
-filter or layer pin needs re-checking.
+**The fix is filtering at the query, not after rasterizing**:
+`FEATURECLASS='StreetCenterline'` (see above) excludes non-street features
+before they ever reach `rasterize()`, so nothing is left to occlude a real
+street with. This applies to Phase 1 landmark manifests too, not just
+ground truth: `scripts/build_manifests.py --streets-geojson` reads the same
+pinned export, so a manifest built from an unfiltered pull carries the same
+contamination in its candidate-road set. `check_label`'s "OBJECTID(s) never
+rasterized, occluded by an overlapping segment" warning (and the matching
+entry in `--report`'s JSON) is a safety net either way - a resurgence of it
+is a signal the filter or layer pin needs re-checking.
 
 ### Storage format
 
@@ -426,23 +467,10 @@ look at a lot of them quickly:
    a reconstruction that could drift from it. Answers "does the rasterized
    geometry actually sit on the streets, across the whole set" - the same
    question `csnav.viz.map_view.manifest_map` answers for candidate-road
-   manifests.
-
-   Every kind of geometry (tiles, roads, intersections) is one
+   manifests. Every kind of geometry (tiles, roads, intersections) is one
    `folium.GeoJson` layer holding a whole `FeatureCollection`, never one
-   Python object per shape. This matters at real scale: a full-AOI label set
-   is hundreds of tiles over a dense city street network, and a road can
-   even vectorize into several disjoint polygon pieces where an intersection
-   cuts through it (see `rasterize.py`'s docstring), so the shape count for
-   a few hundred tiles can run into the thousands. An earlier version drew
-   one `folium.Polygon`/`Rectangle`/`CircleMarker` per shape - that many
-   heavyweight Python/Jinja objects held in memory at once (well before
-   `.render()` ever runs) was enough to get the whole process SIGKILL'd by
-   the OOM killer on a memory-constrained devcontainer, with no traceback at
-   all to point at why. Benchmarked against a synthetic ~5,000-instance
-   label set, the `GeoJson`-batched version used about 30% less peak memory
-   and ran about 3x faster than the one-object-per-shape version, and the
-   gap widens with instance count.
+   Python object per shape - see "Memory-safe by design" below for why that
+   matters at scale.
 3. **`csnav.viz.ground_truth_gallery`** - the exhaustive per-tile view, a
    self-contained static HTML page (no server). Two pixel-aligned PNGs per
    tile (imagery, and a transparent-background label overlay) are stacked
@@ -459,30 +487,26 @@ look at a lot of them quickly:
 `scripts/visualize_ground_truth.py` wires both views up from one labels
 directory + its paired imagery directory.
 
-### Memory: labels are loaded one tile at a time, never as one big list
+### Memory-safe by design
 
-The GeoJson-batching fix above addressed the number of *rendering* objects
-held at once, but not a second, larger problem: `visualize_ground_truth.py`
-originally loaded every `PanopticLabel` in the label set - both
-full-resolution rasters included - into one Python `list` before doing
-anything with it, so both the map and the gallery ran with the *entire*
-label set's rasters resident in memory simultaneously regardless of how
-efficiently each one got rendered. On a real full-AOI label set (hundreds of
-tiles) this alone was enough to get the process SIGKILL'd, independent of
-the GeoJson fix.
+A full-AOI label set is easily hundreds of thousands of tiles, each
+carrying two full-resolution rasters - per CLAUDE.md's "never materialize
+the full per-tile dataset" convention, nothing in this pipeline holds more
+than one tile's rasters, or more than one rendering object per whole
+`FeatureCollection`, in memory at once:
 
-`ground_truth_review_map` and `build_gallery` now both consume `labels`/
-`labels_and_imagery` as a **single-pass iterator** rather than requiring a
-pre-built list - `scripts/visualize_ground_truth.py`'s `_iter_labels`
-generator loads one label from disk, lets the caller extract what it needs
-(vectorized features for the map; rendered PNGs, written straight to disk,
-for the gallery), and only then loads the next, so at most one tile's
-rasters are ever alive at once. Benchmarked at a more realistic tile
-resolution (512x512, 256 tiles): peak memory dropped from ~700 MB (the
-eager-list version) to ~185 MB (the streaming version) - about a 3.8x
-reduction, and the eager version's cost scales with the *whole* label set's
-total pixel count, so the gap only widens for a larger or higher-resolution
-AOI.
+- `ground_truth_review_map`/`build_gallery` consume their label sets as a
+  **single-pass iterator**, not a pre-built list -
+  `scripts/visualize_ground_truth.py`'s `_iter_labels` generator loads one
+  label from disk, lets the caller extract what it needs (vectorized
+  features for the map; rendered PNGs, written straight to disk, for the
+  gallery), and only then loads the next.
+- Every kind of geometry on the review map (tiles, roads, intersections) is
+  one `folium.GeoJson` layer holding a whole `FeatureCollection`, never one
+  heavyweight `folium.Polygon`/`Rectangle`/`CircleMarker` Python/Jinja
+  object per shape - a full-AOI label set's shape count runs into the
+  thousands (a road can vectorize into several disjoint pieces where an
+  intersection cuts through it), and per-shape objects don't scale.
 
 The gallery scales to any label-set size this way with no further changes
 needed - each tile's images are written to disk and released before the
@@ -491,88 +515,34 @@ in *one* map, so it still needs every tile's vectorized features (much
 smaller than the rasters they came from, but not free) resident at once.
 `scripts/visualize_ground_truth.py --limit N` / `--sample N` scope a run
 down to N tiles (respectively: the first N by tile key, or N evenly spread
-across the whole sorted set) when even that doesn't fit. Tile keys sort
-numerically by `(level, row, col)`, not as plain strings - a mix of zoom
-levels in one `--labels-dir` would otherwise put a run of tiles first for
-reasons unrelated to their actual level/position. The map and the gallery
-apply the selection to two different pools, though: the map's `N` comes
-from every label in `--labels-dir`, but the gallery's `N` comes only from
-labels that currently have a matching file under `--imagery-dir` - see
-"`--labels-dir` can outgrow `--imagery-dir`" below for why.
+across the whole sorted set) when even that doesn't fit.
 
-### Gallery: a re-run with a smaller/different selection must not drop tiles
+### Tile selection
 
-A real incident: a full gallery run (`scripts/visualize_ground_truth.py`
-with no `--limit`) followed by a second run with `--limit 500` into the
-*same* `--gallery-dir` left most of the first run's tiles unreachable from
-the page - `index.html`'s embedded `TILES` array only listed the second
-run's (smaller) selection, even though the first run's PNGs were still
-sitting on disk under the same `images/`/`thumbs/` directories. From the
-browser this looked exactly like a rendering bug (a mostly-empty gallery,
-thumbnails "missing" despite the files existing in the directory), not the
-silent `index.html` truncation it actually was - `write_gallery` was simply
-overwriting the page with whatever tiles the current call happened to
-pass, rather than accumulating across calls the way the module's own
-"resuming a large run" story implied it should.
+Tile keys sort numerically by `(level, row, col)`, not as plain strings - a
+mix of zoom levels in one `--labels-dir` would otherwise put a run of tiles
+first for reasons unrelated to their actual level/position.
 
-Fixed by giving the gallery directory its own `tiles.json` manifest
-sidecar: every `write_gallery` call now reads whatever this directory
-already lists, merges in the tiles from the current call (keyed by
-`stem` - a fresh render for an existing stem replaces its old entry), and
-writes the union back to both `tiles.json` and `index.html`. A later,
-smaller/differently-scoped selection (a smaller `--limit`, a different
-`--manifest`, even one call with zero matched tiles) now only *adds to* or
-*refreshes* the page, never silently shrinks it. `--overwrite` still forces
-a fresh render of a given tile's images; it does not remove any other
-tile's entry from the manifest.
+The map and the gallery apply `--limit`/`--sample` to two different pools,
+though: the map's `N` comes from every label in `--labels-dir`, but the
+gallery's `N` comes only from labels that currently have a matching file
+under `--imagery-dir` (`_paths_with_imagery`, applied *before* the
+limit/sample cut) - see "Keeping a labels directory in sync" above for why
+a labels directory can otherwise carry tiles with no matching imagery at
+all, which would otherwise make a limited/sampled gallery run pick tiles
+that can never render.
 
-### `--labels-dir` can outgrow `--imagery-dir`, and `build_ground_truth.py` never prunes for it
+### Gallery persistence across runs
 
-A real incident, found the hard way on an actual ~260,000-tile
-`data/ground_truth/current`: over a long debugging session spanning
-several different imagery pulls (different bboxes, different zoom levels),
-`--labels-dir` had accumulated far more label files than the *current*
-`--imagery-dir` had tiles for - concretely, 259,777 labels against 36,851
-current imagery tiles, with **222,926 (85.8%) having no matching imagery
-file at all**. `build_ground_truth.py` only ever enumerates tiles from
-whatever `--imagery-dir` currently holds (`_tiles_from_imagery_dir`) and
-writes/overwrites *those* - it has no code path that deletes a label file
-for a tile outside that enumeration, no matter how many times `--overwrite`
-is passed. So a labels directory reused across several different
-imagery/bbox pulls just keeps growing a pile of orphaned label files that
-nothing in this pipeline will ever clean up automatically.
-
-This caused two distinct, confusing symptoms downstream:
-
-- **`check_ground_truth.py`'s warning count didn't budge** after a real
-  upstream fix (a corrected streets filter), because it scans the *entire*
-  `--labels-dir` - 85.8% of which was untouched, unrelated leftover data
-  from before the fix existed, and always would be under this workflow.
-- **`visualize_ground_truth.py --limit 500` failed with "no label had
-  matching imagery"**, even though the label set as a whole had plenty of
-  renderable tiles. Sorted tile keys had mixed zoom levels in them (the
-  orphaned tiles were an older level, e.g. 19; the current imagery was
-  entirely a newer level, e.g. 21), so the first-500-by-tile-key slice
-  landed entirely among the orphaned, unrenderable tiles.
-
-Fixed on the selection side (`_paths_with_imagery` in
-`scripts/visualize_ground_truth.py`): the gallery's `--limit`/`--sample`
-now draws only from labels that currently have a matching imagery file,
-computed *before* the limit/sample cut is applied - so a limited gallery
-run can never land entirely among orphaned tiles, regardless of how many
-exist elsewhere in `--labels-dir`. A warning names exactly how many labels
-were excluded this way, so the orphan pile itself is visible even when the
-gallery run otherwise succeeds.
-
-**This does not fix `check_ground_truth.py`**, which still scans
-everything under `--labels-dir` by design (it is meant to audit the whole
-set, not a convenient subset) - an orphaned-label pile will keep inflating
-its warning counts until `--labels-dir` is cleaned. There is no
-`--prune`/cleanup flag for this (deliberately not built speculatively -
-ask if this keeps happening in practice); the direct fix is to delete and
-rebuild `--output-dir` from scratch once `--imagery-dir` has settled on its
-final scope, rather than reusing one `--output-dir` across genuinely
-different imagery pulls.
+`write_gallery` keeps a `tiles.json` manifest sidecar next to `index.html`:
+every call reads whatever the gallery directory already lists, merges in
+the tiles from the current call (keyed by `stem` - a fresh render for an
+existing stem replaces its old entry), and writes the union back to both
+files. A later, smaller/differently-scoped selection (a smaller `--limit`,
+a different `--manifest`, even a call with zero matched tiles) only *adds
+to* or *refreshes* the page, never shrinks it. `--overwrite` still forces a
+fresh render of a given tile's images; it does not remove any other tile's
+entry from the manifest.
 
 ## Running the tests
 

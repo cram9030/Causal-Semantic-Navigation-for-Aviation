@@ -57,8 +57,8 @@ a rasterization fix) without ``--overwrite`` will silently keep showing the
 *old* images - this script logs a warning when it detects an existing
 ``--gallery-dir`` with no ``--overwrite`` passed, precisely because this
 has already been mistaken for a rendering bug once. See
-``docs/phase2_ground_truth_rasterization.md``'s "Refreshing after an
-upstream fix" section for the full sequence this fits into.
+``docs/phase2_ground_truth_rasterization.md``'s "Keeping a labels directory
+in sync" section for the full sequence this fits into.
 
 Example (whole label set)::
 
@@ -259,8 +259,8 @@ def main() -> None:
                 "rebuilt since this gallery directory was last written (a streets re-fetch, a "
                 "rasterization fix, anything upstream), this run will silently keep showing the "
                 "old images unless you pass --overwrite or point --gallery-dir at a new, empty "
-                "directory. See docs/phase2_ground_truth_rasterization.md's \"Refreshing after an "
-                "upstream fix\" section.",
+                "directory. See docs/phase2_ground_truth_rasterization.md's \"Keeping a labels "
+                "directory in sync\" section.",
                 args.gallery_dir,
             )
 
@@ -277,7 +277,7 @@ def main() -> None:
                 "picks from tiles that can actually render), but they still count toward "
                 "check_ground_truth.py's totals and warnings. Consider a clean rebuild of "
                 "--labels-dir if that number is large - see "
-                "docs/phase2_ground_truth_rasterization.md's \"Refreshing after an upstream fix\" "
+                "docs/phase2_ground_truth_rasterization.md's \"Keeping a labels directory in sync\" "
                 "section.",
                 len(all_paths) - len(gallery_candidates), len(all_paths), args.labels_dir, args.imagery_dir,
             )

@@ -215,6 +215,53 @@ how this maps onto the originally-sketched module layout.
   type, for a lightweight reachability check.
 - No `cache_dir`/download step - every call is live.
 
+## Running it
+
+Normally run via DVC (`dvc repro fetch_streets fetch_lidar` - see the
+top-level README's "Running the pipeline" section); the direct CLI is
+useful for a one-off AOI, a historic-moment pull, or debugging.
+
+### CSJ Streets
+
+```bash
+uv run python scripts/fetch_csj_streets.py \
+    --bbox -121.95 37.30 -121.85 37.36 \
+    --output data/raw/csj_streets/downtown.geojson
+```
+
+Queries the pinned, correct layer directly by default (`--layer-url`/
+`--where` - see `docs/phase2_ground_truth_rasterization.md`'s "The CSJ
+Streets layer and filter" for what they're pinned to and why), restricted
+to `--bbox` (EPSG:4326; omit to pull the whole layer), and writes the
+result as a GeoJSON `FeatureCollection`.
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--bbox MINLON MINLAT MAXLON MAXLAT` | no | whole layer | Area of interest, EPSG:4326. |
+| `--output PATH` | yes (unless `--list-fields`/`--list-layers`/`--distinct-values`) | - | GeoJSON output path. |
+| `--layer-url URL` | no | the pinned `Streets` layer | Query a different layer URL directly instead - pass `""` to fall back to name-based discovery (`--root`/`--service-name-contains`/`--layer-name-contains`). |
+| `--where SQL` | no | `FEATURECLASS='StreetCenterline'` | ArcGIS SQL WHERE clause. |
+| `--historic-moment TIMESTAMP` | no | current network | Request the network as of a past edit moment, if the layer has ArcGIS archiving enabled (unconfirmed for CSJ Streets - see `docs/phase2_ground_truth_rasterization.md`). |
+| `--list-layers` | no | off | Print every layer matching `--layer-name-contains`, then exit - for re-pinning `--layer-url` after a catalog reorganization. |
+| `--list-fields` | no | off | Print the resolved layer's fields/coded values, then exit. |
+| `--distinct-values FIELD` | no | off | Print every value FIELD actually contains, then exit. |
+
+### Ground elevation (USGS 3DEP)
+
+```bash
+uv run python scripts/fetch_lidar_elevation.py \
+    --bbox -121.95 37.30 -121.85 37.36 \
+    --output data/raw/lidar/downtown_dem.tif
+```
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--bbox MINLON MINLAT MAXLON MAXLAT` | one of `--bbox`/`--identify` | - | Area to export as a raster, EPSG:4326. |
+| `--identify LON LAT` | one of `--bbox`/`--identify` | - | Print a single point's elevation instead of exporting a raster. |
+| `--output PATH` | with `--bbox` | - | GeoTIFF output path. |
+| `--width`, `--height` | no | 512, 512 | Output raster size in pixels. |
+| `--pixel-type TYPE` | no | `F32` | Output pixel type. |
+
 ## Running the tests
 
 ```bash

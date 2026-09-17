@@ -373,6 +373,10 @@ a whole route at the finest level is not something to materialize by accident.
 
 ## Running it
 
+Normally run via DVC (`dvc repro visualize_trajectories build_manifests` -
+see the top-level README's "Running the pipeline" section); the direct CLI
+is useful for a one-off sweep or debugging.
+
 ```bash
 uv sync --extra dev --extra viz
 ```
@@ -381,7 +385,7 @@ The visualization extra is Plotly and folium; both emit self-contained HTML
 that opens without network access (the maps still fetch basemap tiles when
 you open them, and `--no-imagery` drops that layer too).
 
-Render the report and maps for the pilot scenario:
+### Visualizing the trajectory set
 
 ```bash
 uv run python scripts/visualize_trajectories.py \
@@ -389,29 +393,71 @@ uv run python scripts/visualize_trajectories.py \
     --output-dir out/viz
 ```
 
-Sweep a different tube radius without touching the config:
+Writes, into `--output-dir` - all of it self-contained, interactive HTML:
 
-```bash
-uv run python scripts/visualize_trajectories.py \
-    --scenario configs/scenarios/san_jose_downtown.yaml \
-    --tube-radius 500 --output-dir out/viz_r500
-```
+| File | What it shows |
+| --- | --- |
+| `trajectory_graph.html` | The **structural** view: `T` as a transition graph (routes as nodes, permitted hand-offs as edges, `x_0` as the entry), the routes those rules permit, and one arc-length profile per route showing height above ground, the tube radius, the camera's ground reach, and the manifest window boundaries. Node positions are graph layers, deliberately not geography - that is the map's job. |
+| `trajectory_set.html` | The spatial view: every route with its tube and visible footprint, and every transition family with the region it can reach, over San Jose imagery. |
+| `trajectory_<id>.html` | One map per route: its tube at the configured radius, the per-window visible footprints, and the imagery tiles those footprints cover. Windows overlap, so each is its own layer with a **window selector** panel - see "Isolating windows" above. |
+| `transition_<source>__<target>.html` | One map per transition rule: every sampled hand-off, where each initiates on the source, the waypoint it rejoins at, and the region the family sweeps. |
 
-Build and pin the manifests — from the live CSJ Streets layer, or from an
-archived pull:
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--scenario PATH` | yes | - | Scenario YAML defining `T`, `t_p`, `x_0`, the transition rules, and the CONOPS parameters. |
+| `--output-dir PATH` | yes | - | Directory to write the report and maps into; created if missing. |
+| `--tube-radius M` | no | the scenario's `conops.tube_radius_m` | Override the tube radius, in meters - the sweep entry point. |
+| `--tile-level N` | no | the scenario's `conops.tile_level` | Imagery cache level for the "tiles in view" layer. |
+| `--transition-samples N` | no | the scenario's `conops.transition.samples` | Initiation points sampled per transition rule. A fidelity knob on how finely the continuous family is stood in for - denser to inspect, sparser to draw. |
+| `--no-tiles` | no | off | Skip the imagery-tile layer on the per-route maps. |
+| `--no-transitions` | no | off | Skip the transition-family layers and the per-rule maps. |
+| `--no-imagery` | no | off | Omit the San Jose DPW imagery basemap layer, for maps reviewed without network access. |
+| `-v`, `--verbose` | no | off | DEBUG-level logging. |
+
+Every element on the maps is a toggleable layer, and hovering a corridor,
+transition path, window footprint, or tile shows the numbers behind it
+(window id, arc-length span, max AGL, camera ground reach, initiation arc
+length, arrival waypoint, turn angles, tile `level/row/col`).
+
+### Building the landmark manifests
 
 ```bash
 uv run python scripts/build_manifests.py \
     --scenario configs/scenarios/san_jose_downtown.yaml \
     --output data/manifests/san_jose_downtown_r250.json \
     --map out/viz/manifests.html
-
-uv run python scripts/build_manifests.py \
-    --scenario configs/scenarios/san_jose_downtown.yaml \
-    --streets-geojson data/raw/csj_streets/downtown.geojson \
-    --elevation \
-    --output data/manifests/san_jose_downtown_r250.json
 ```
+
+For each window of each candidate route, this grows the tube by how far the
+camera can see, queries CSJ Streets against that envelope, clips the
+returned centerlines to it, derives their intersections, and records the
+imagery tiles the window covers. The result is one pinned JSON bundle - the
+runtime "possible roads" lookup reads it and never re-queries CSJ Streets.
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--scenario PATH` | yes | - | Scenario YAML. |
+| `--output PATH` | yes | - | Path to write the pinned manifest bundle JSON. |
+| `--streets-geojson PATH` | no | live CSJ Streets query | Build from an archived pull (e.g. `fetch_csj_streets.py`'s output) instead of a live query - prefer this when rebuilding a manifest that has to match an earlier flight-planning cycle, since the live layer refreshes weekly. |
+| `--layer-url URL` | no | discovery | Skip discovery and query this Streets layer URL directly, when building from a live query. |
+| `--tube-radius M` | no | the scenario's `conops.tube_radius_m` | Override the tube radius, in meters - re-run with different values to sweep it. |
+| `--tile-level N` | no | the scenario's `conops.tile_level` | Imagery cache level to record tiles at. |
+| `--no-tiles` | no | off | Don't record imagery tiles in the manifests. |
+| `--elevation` | no | off | Derive AGL from USGS 3DEP ground elevation instead of treating waypoint height as AGL. |
+| `--per-window-query` | no | off | Query CSJ Streets per window instead of once per trajectory (slower, tighter bounding boxes). |
+| `--no-transitions` | no | off | Only build manifests for candidate routes, skipping every transition family - see "Every transition rule is covered the same way, by default" below. |
+| `--map PATH` | no | off | Also write a folium review map of the built bundle, with the window selector described above. |
+| `--map-landmarks` | no | off | Include each window's candidate roads/intersections in `--map` as further categories - off by default, since across a whole bundle that's a lot of geometry (the per-route `manifest_map` view is the one for inspecting landmarks closely). |
+| `-v`, `--verbose` | no | off | DEBUG-level logging. |
+
+**Every transition rule is covered the same way, by default.** A transition
+may begin anywhere along its source, so the aircraft can legitimately be
+anywhere the sampled family sweeps while a hand-off is under way - the
+manifest has to say what could be seen from there too, not just from the
+candidate routes. `build_set` generates each rule's family and builds
+windows over every sampled path, querying streets once per family rather
+than once per path. Pass `--no-transitions` to build candidate-route
+manifests only.
 
 ## Using it from Python
 

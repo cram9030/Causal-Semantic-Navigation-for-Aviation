@@ -30,8 +30,8 @@ file itself** - if ``fetch_csj_streets.py``'s own layer/filter defaults
 change, an already-downloaded ``--streets-geojson`` is untouched until you
 explicitly re-run it; pointing ``--overwrite`` here at a stale file just
 re-rasterizes the same (stale) street data. See
-``docs/phase2_ground_truth_rasterization.md``'s "Refreshing after an
-upstream fix" section for the full fetch -> build -> visualize sequence.
+``docs/phase2_ground_truth_rasterization.md``'s "Keeping a labels directory
+in sync" section for the full fetch -> build -> visualize sequence.
 Pairing older imagery with a matching
 historic street snapshot (rather than today's network) is what
 ``fetch_csj_streets.py --historic-moment`` is for, where the live layer turns
