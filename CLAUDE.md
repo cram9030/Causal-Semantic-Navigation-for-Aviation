@@ -92,6 +92,28 @@ docs/                 Integration plan, UML diagram, and other design references
   to be swept across experiments.
 - Prefer `networkx.DiGraph` for both trajectory graphs and the slice DAG spec — matches
   DoWhy-GCM's expected graph structure and avoids a translation layer.
+- **Never materialize the full per-tile dataset into memory or into one output artifact.**
+  `data/ground_truth/` (and any future per-tile output — segmentation predictions, confusion-matrix
+  inputs, etc.) is one file pair per imagery tile at full-AOI scale, which means hundreds of
+  thousands of files, not hundreds. Any function that iterates such a dataset — building a review
+  map, a QA gallery, a training manifest, anything — must consume it as a single-pass
+  iterator/generator (load one tile, use it, let it be garbage-collected, load the next), never
+  `list(...)`/`sorted(...)` the whole thing into memory first "to make it easier to compute a
+  summary" or "because a helper needed `len()`". This already caused a real incident: an
+  eager `[PanopticLabel.load(...) for ... in labels_dir.glob(...)]` in the ground-truth
+  visualizer got the process SIGKILL'd (exit 137, no traceback — a killed process can't raise
+  one) on a real ~260,000-tile label set, on top of a *separate* problem in the same code
+  (one heavyweight rendering object per shape instead of one batched layer) that had already
+  been "fixed" without anyone noticing the eager-list loop underneath it. See
+  `docs/phase2_ground_truth_rasterization.md`'s "Memory" section for the full story and the
+  before/after numbers.
+  A batch view over the whole set (a map, a gallery page) is a second, distinct limit even
+  once loading is properly lazy: it still has to hold *something* per tile (a vectorized
+  feature, a DOM thumbnail) to draw them all together, and that stops being practical — for a
+  human to review, or for a browser to render — long before Python runs out of memory. Give
+  large-N entry points an explicit, cheap way to select a bounded subset (e.g. `--limit`/
+  `--sample`, or scoping to a smaller precomputed set like one trajectory's manifest) rather
+  than assuming "the whole label set" is ever the right amount of data to hand to one view.
 
 ## Testing priorities
 
@@ -105,6 +127,12 @@ Given where the risk actually is (per the integration plan's open-items list):
    output unchanged)? This is the load-bearing tractability assumption — worth a regression test.
 4. Confusion-matrix-derived noise priors actually flow into the GCM mechanism fitting, not just
    computed and discarded.
+5. Any function that processes `data/ground_truth/` (or another per-tile output at that scale):
+   does it actually run in ~O(1) memory per tile, or does it just work at whatever tile count the
+   test fixture happened to use? A test against a handful of synthetic tiles will not catch an
+   eager `list(...)`/`[... for ... in glob(...)]` load — this has already happened once. Prove it
+   with a generator that would raise if consumed more than once, or a synthetic set large enough
+   (thousands, not tens) to make an accidental full-materialization show up in timing/memory.
 
 ## What not to do
 
@@ -118,3 +146,7 @@ Given where the risk actually is (per the integration plan's open-items list):
   the model generate it (`TrajectorySet` rejects a `role: transition` trajectory outright).
 - Don't plot graph structure in lat/lon. The transition graph is a structural view; geography
   belongs on the folium maps.
+- Don't load a whole per-tile dataset (`data/ground_truth/` or similar) into a `list` before
+  processing it, and don't hand a whole such dataset to one rendering/aggregation call without a
+  way to bound how much of it that call actually consumes. Both have already caused a real
+  `SIGKILL` on real data — see the "coding conventions" bullet above.

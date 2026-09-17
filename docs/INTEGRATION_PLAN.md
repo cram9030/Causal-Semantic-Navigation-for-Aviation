@@ -252,9 +252,44 @@ reach across a window rather than from the cone angle alone. The margin
 defaults to zero, so the first proof of concept behaves as if the aircraft were
 level.
 
-`data/ground_truth/`, `segmentation/`, `scene_graph/`, `causal_model/`,
-`baseline_slam/` and `eval/` remain unimplemented (Phase 2+). See
-`docs/phase1_trajectory_manifests.md`.
+`segmentation/`, `scene_graph/`, `causal_model/`, `baseline_slam/` and
+`eval/` remain unimplemented (Phase 2+, beyond the ground-truth builder
+below). See `docs/phase1_trajectory_manifests.md`.
+
+**Implementation note (Phase 2, ground truth only):** the rasterizer lands
+under `src/csnav/` too, as `csnav.data.ground_truth`, for the same reason as
+Phases 0/1 - one installable package rather than a split `data/ground_truth/`
+tree:
+
+```
+src/csnav/data/ground_truth/
+├── labels.py       # PanopticClass, SegmentInfo, PanopticLabel (2-band GeoTIFF + JSON sidecar)
+├── rasterize.py    # GroundTruthBuilder.rasterize(streets, tile, width, height, transform)
+└── checks.py       # automated shape/instance-consistency checks over a label set
+
+src/csnav/viz/
+├── ground_truth_view.py     # folium review map (vectorized straight back out of the label rasters)
+└── ground_truth_gallery.py  # static paged HTML QA gallery for exhaustive per-tile review
+```
+
+`GroundTruthBuilder.rasterize()` (§7's UML) is a pure function of geometry,
+not a live-fetching step: it takes the target pixel grid
+(`width`/`height`/`transform`) as explicit arguments, read by the caller from
+an already-fetched, already-reprojected imagery GeoTIFF, and `streets` as an
+in-memory `StreetSegment` list from an archived GeoJSON pull - the same "pin
+to an archived snapshot, don't re-query the weekly-refreshed live layer"
+reasoning `csnav.trajectory.manifest_builder.StaticStreetsSource` already
+applies. This keeps rasterization easily testable (a synthetic transform and
+segment list, no network or raster file needed) and guarantees
+pixel-for-pixel alignment with whatever imagery a training loader actually
+reads, rather than reconstructing a transform that could drift from it.
+Tiles to rasterize can come from a full AOI-wide scan of an already-fetched
+imagery directory (the default - what Mask2Former training needs) or be
+restricted to one pinned `ManifestBundle`'s tiles (`--manifest`, for a
+narrower regional-sensitivity check). See
+`docs/phase2_ground_truth_rasterization.md` for the rest, including the
+open question on pairing a historic imagery vintage with a matching
+historic street-network snapshot.
 
 ---
 
@@ -270,6 +305,7 @@ classDiagram
 class ArcGISCatalog {
   +discover_services(name_contains, service_types) List
   +find_layer(layer_name_contains, service_name_contains) str
+  +find_layers(layer_name_contains, service_name_contains) List
 }
 class ArcGISTileClient {
   +fetch_tile(level, row, col) bytes
@@ -277,13 +313,14 @@ class ArcGISTileClient {
 }
 class CSJStreetsClient {
   +query(bbox, where) List~StreetSegment~
+  +query_distinct_values(field, where, bbox) List
 }
 class LidarElevationClient {
   +read_window(bbox, width, height) ReprojectedTile
   +identify(lon, lat) float
 }
 class GroundTruthBuilder {
-  +rasterize(streets, tile) PanopticLabel
+  +rasterize(streets, tile, width, height, transform) PanopticLabel
 }
 class LocalFrame {
   +float origin_lat
@@ -363,8 +400,6 @@ ManifestBuilder ..> CSJStreetsClient : uses
 ManifestBuilder ..> LocalFrame : uses
 ManifestBuilder ..> TubeModel : uses
 ManifestBuilder --> LandmarkManifest : creates
-GroundTruthBuilder ..> CSJStreetsClient : uses
-GroundTruthBuilder ..> ArcGISTileClient : uses
 GroundTruthBuilder ..> LocalFrame : uses
 ArcGISCatalog ..> ArcGISTileClient : resolves service URL for
 ArcGISCatalog ..> CSJStreetsClient : resolves layer URL for

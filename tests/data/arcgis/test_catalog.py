@@ -201,6 +201,36 @@ def test_find_layer_skips_service_that_404s_and_checks_the_next_one():
 
 
 @responses.activate
+def test_find_layers_returns_every_match_not_just_the_first():
+    """find_layer picking blindly among several matching layers is exactly how a real
+    ground-truth build ended up querying a layer with no width field after CSJ's catalog
+    reorganized - find_layers lets a caller see every candidate and choose deliberately.
+    """
+    responses.add(
+        responses.GET,
+        f"{BASE}",
+        json={"folders": [], "services": [{"name": "OPN/OPN_OpenDataService", "type": "MapServer"}]},
+    )
+    responses.add(
+        responses.GET,
+        f"{BASE}/OPN/OPN_OpenDataService/MapServer",
+        json={
+            "layers": [
+                {"id": 12, "name": "Parcels"},
+                {"id": 60, "name": "Streets"},
+                {"id": 522, "name": "Street Centerlines"},
+            ]
+        },
+    )
+
+    catalog = ArcGISCatalog(base_url=BASE)
+    matches = catalog.find_layers("Street", service_name_contains="OpenDataService")
+
+    service_url = f"{BASE}/OPN/OPN_OpenDataService/MapServer"
+    assert matches == [(f"{service_url}/60", "Streets"), (f"{service_url}/522", "Street Centerlines")]
+
+
+@responses.activate
 def test_find_layer_raises_when_no_layer_matches():
     responses.add(
         responses.GET,

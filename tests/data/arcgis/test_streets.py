@@ -2,7 +2,14 @@ import pytest
 import responses
 
 from csnav.data.arcgis.models import Extent
-from csnav.data.arcgis.streets import CSJStreetsClient, CSJStreetsError, StreetSegment
+from csnav.data.arcgis.streets import (
+    CSJStreetsClient,
+    CSJStreetsError,
+    StreetSegment,
+    segment_geometry,
+    street_name,
+    street_width_m,
+)
 
 LAYER_URL = "https://example.test/server/rest/services/OPN/OPN_OpenDataService/MapServer/60"
 
@@ -128,3 +135,115 @@ def test_street_segment_round_trips_to_geojson_feature():
     feature = segment.to_geojson_feature()
     assert feature["geometry"] == {"type": "LineString", "coordinates": [[0, 0], [1, 1]]}
     assert feature["properties"] == {"STREETNAME": "First St"}
+
+
+@responses.activate
+def test_query_forwards_historic_moment_param():
+    responses.add(responses.GET, f"{LAYER_URL}/query", json={"features": []})
+
+    client = CSJStreetsClient(LAYER_URL)
+    client.query(historic_moment="2019-01-01T00:00:00Z")
+
+    url = responses.calls[0].request.url
+    assert "historicMoment=2019-01-01T00%3A00%3A00Z" in url
+
+
+@responses.activate
+def test_query_omits_historic_moment_by_default():
+    responses.add(responses.GET, f"{LAYER_URL}/query", json={"features": []})
+
+    client = CSJStreetsClient(LAYER_URL)
+    client.query()
+
+    assert "historicMoment" not in responses.calls[0].request.url
+
+
+def test_street_width_m_converts_feet_to_meters():
+    assert street_width_m({"WIDTH": 40.0}) == pytest.approx(40.0 * 0.3048)
+
+
+def test_street_width_m_reads_focwidth_the_confirmed_csj_field():
+    """FOCWIDTH ("face-of-curb", i.e. curb-to-curb) is CSJ's actual published width field -
+    confirmed against the live schema after every other candidate here turned out to be a
+    guess that never matched it (see docs/phase2_ground_truth_rasterization.md).
+    """
+    assert street_width_m({"FOCWIDTH": 36.0}) == pytest.approx(36.0 * 0.3048)
+
+
+def test_street_width_m_prefers_focwidth_over_other_candidates():
+    assert street_width_m({"FOCWIDTH": 36.0, "WIDTH": 20.0}) == pytest.approx(36.0 * 0.3048)
+
+
+def test_street_width_m_tries_candidates_in_order():
+    assert street_width_m({"ROADWIDTH": 20.0}) == pytest.approx(20.0 * 0.3048)
+
+
+def test_street_width_m_none_when_absent():
+    assert street_width_m({}) is None
+    assert street_width_m({"WIDTH": ""}) is None
+
+
+def test_street_name_tries_candidates_in_order():
+    assert street_name({"FULLNAME": "Main St"}) == "Main St"
+    assert street_name({}) is None
+
+
+def test_segment_geometry_linestring_and_multilinestring():
+    single = StreetSegment(object_id=1, parts=(((0, 0), (1, 1)),), attributes={})
+    assert list(segment_geometry(single).coords) == [(0, 0), (1, 1)]
+
+    multi = StreetSegment(object_id=2, parts=(((0, 0), (1, 1)), ((2, 2), (3, 3))), attributes={})
+    geometry = segment_geometry(multi)
+    assert [list(part.coords) for part in geometry.geoms] == [[(0, 0), (1, 1)], [(2, 2), (3, 3)]]
+
+
+@responses.activate
+def test_query_distinct_values_returns_values_in_order():
+    responses.add(
+        responses.GET,
+        f"{LAYER_URL}/query",
+        json={
+            "features": [
+                {"attributes": {"DESIGNATION": "Alley"}},
+                {"attributes": {"DESIGNATION": "Local"}},
+            ]
+        },
+    )
+
+    client = CSJStreetsClient(LAYER_URL)
+    values = client.query_distinct_values("DESIGNATION")
+
+    assert values == ["Alley", "Local"]
+    url = responses.calls[0].request.url
+    assert "returnDistinctValues=true" in url
+    assert "outFields=DESIGNATION" in url
+    assert "orderByFields=DESIGNATION" in url
+    assert "returnGeometry=false" in url
+
+
+@responses.activate
+def test_query_distinct_values_with_bbox_sends_envelope_params():
+    responses.add(responses.GET, f"{LAYER_URL}/query", json={"features": []})
+
+    client = CSJStreetsClient(LAYER_URL)
+    bbox = Extent(xmin=-122.0, ymin=37.2, xmax=-121.8, ymax=37.4, wkid=4326)
+    client.query_distinct_values("DESIGNATION", bbox=bbox)
+
+    url = responses.calls[0].request.url
+    assert "geometryType=esriGeometryEnvelope" in url
+
+
+def test_query_distinct_values_rejects_non_4326_bbox():
+    client = CSJStreetsClient(LAYER_URL)
+    bbox = Extent(xmin=0, ymin=0, xmax=1, ymax=1, wkid=3857)
+    with pytest.raises(ValueError):
+        client.query_distinct_values("DESIGNATION", bbox=bbox)
+
+
+@responses.activate
+def test_query_distinct_values_raises_on_arcgis_error_payload():
+    responses.add(responses.GET, f"{LAYER_URL}/query", json={"error": {"code": 400, "message": "boom"}})
+
+    client = CSJStreetsClient(LAYER_URL)
+    with pytest.raises(CSJStreetsError):
+        client.query_distinct_values("NOFIELD")

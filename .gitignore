@@ -9,6 +9,7 @@ data/raw/
 data/cache/
 data/manifests/
 data/dvc-storage/
+data/ground_truth/
 out/
 *.tif
 *.tiff

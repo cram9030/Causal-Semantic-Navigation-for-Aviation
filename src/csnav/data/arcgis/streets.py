@@ -18,12 +18,36 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
+from shapely.geometry import LineString, MultiLineString
 
 from .models import Extent
 
 #: Coordinates are always requested/returned in this spatial reference -
 #: matches the "WGS84 for all storage/interop" rule in CLAUDE.md.
 OUTPUT_WKID = 4326
+
+#: Field names the CSJ Streets schema has used for roadway width, tried in
+#: order. The live schema owns these names, so this is a lookup list rather
+#: than a fixed contract - callers get ``None`` when none of them is present.
+#: Shared by :mod:`csnav.trajectory.manifest_builder` (candidate-road width)
+#: and :mod:`csnav.data.ground_truth.rasterize` (buffer width), so both read
+#: the CSJ schema the same way.
+#:
+#: ``FOCWIDTH`` ("face-of-curb width", i.e. curb-to-curb) is CSJ's actual
+#: published field, confirmed against the live schema - none of the earlier,
+#: guessed names below ever matched it, so every road silently fell back to
+#: the default width until this was added. It's listed first for that
+#: reason; the rest are kept as fallbacks in case a future schema change (or
+#: a differently-sourced streets layer) uses one of them instead. See
+#: `docs/phase2_ground_truth_rasterization.md`'s "Fallback roadway width"
+#: section for the full story.
+WIDTH_FIELD_CANDIDATES = (
+    "FOCWIDTH", "FocWidth", "focwidth",
+    "WIDTH", "Width", "width", "ROADWIDTH", "RoadWidth", "PAVED_WIDTH", "STREETWIDTH",
+)
+
+#: Field names tried for a human-readable street name, same caveat.
+NAME_FIELD_CANDIDATES = ("STREETNAME", "StreetName", "FULLNAME", "FullName", "NAME", "Name", "name")
 
 
 class CSJStreetsError(RuntimeError):
@@ -54,6 +78,42 @@ class StreetSegment:
             else {"type": "MultiLineString", "coordinates": [[list(pt) for pt in part] for part in self.parts]}
         )
         return {"type": "Feature", "geometry": geometry, "properties": dict(self.attributes)}
+
+
+def segment_geometry(segment: StreetSegment) -> LineString | MultiLineString:
+    """A street segment's centerline as a shapely geometry, in WGS84 (lon, lat)."""
+    if len(segment.parts) == 1:
+        return LineString(segment.parts[0])
+    return MultiLineString([list(part) for part in segment.parts])
+
+
+def _first_present(attributes: dict[str, Any], candidates: tuple[str, ...]) -> Any:
+    for key in candidates:
+        value = attributes.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def street_width_m(attributes: dict[str, Any]) -> float | None:
+    """Roadway width in meters from the CSJ attributes, or ``None`` if not published.
+
+    CSJ publishes widths in feet; the value is converted to meters here so
+    everything downstream (manifest offsets, ground-truth buffers) is metric,
+    matching the ENU frame used for that math.
+    """
+    raw = _first_present(attributes, WIDTH_FIELD_CANDIDATES)
+    if raw is None:
+        return None
+    try:
+        return float(raw) * 0.3048
+    except (TypeError, ValueError):
+        return None
+
+
+def street_name(attributes: dict[str, Any]) -> str | None:
+    """Human-readable street name from the CSJ attributes, or ``None`` if not published."""
+    return _first_present(attributes, NAME_FIELD_CANDIDATES)
 
 
 def _as_part(coords: list[list[float]]) -> tuple[tuple[float, float], ...]:
@@ -109,11 +169,57 @@ class CSJStreetsClient:
             raise CSJStreetsError(f"ArcGIS error for {self.layer_url}: {data['error']}")
         return data
 
+    def query_distinct_values(
+        self, field: str, where: str = "1=1", bbox: Extent | None = None
+    ) -> list[Any]:
+        """Every distinct value ``field`` actually contains, via ArcGIS's own de-duplication.
+
+        For a plain string/free-text field with no coded-value domain,
+        layer metadata alone can't say what values it actually holds - only
+        a domain field declares that up front (see
+        `csnav.data.arcgis.streets.WIDTH_FIELD_CANDIDATES`'s own caveat about
+        guessed field names). This is the direct way to check: e.g. does a
+        ``DESIGNATION``/``DESCRIPTION`` field's real vocabulary distinguish
+        actual streets from ramps/alleys/driveways, where a hoped-for
+        ``FEATURECLASS``-style field turns out not to exist on this layer at
+        all. Uses ``returnDistinctValues``/``outFields`` server-side rather
+        than pulling every feature and de-duplicating client-side.
+        """
+        if bbox is not None and bbox.wkid != OUTPUT_WKID:
+            raise ValueError(f"bbox must be EPSG:{OUTPUT_WKID}, got wkid={bbox.wkid}")
+        params: dict[str, Any] = {
+            "f": "json",
+            "where": where,
+            "outFields": field,
+            "returnDistinctValues": "true",
+            "returnGeometry": "false",
+            "orderByFields": field,
+        }
+        if bbox is not None:
+            params.update(
+                {
+                    "geometry": f"{bbox.xmin},{bbox.ymin},{bbox.xmax},{bbox.ymax}",
+                    "geometryType": "esriGeometryEnvelope",
+                    "inSR": OUTPUT_WKID,
+                    "spatialRel": "esriSpatialRelIntersects",
+                }
+            )
+        resp = self.session.get(f"{self.layer_url}/query", params=params, timeout=self.timeout)
+        resp.raise_for_status()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise CSJStreetsError(f"non-JSON response from {self.layer_url}/query") from exc
+        if isinstance(data, dict) and data.get("error"):
+            raise CSJStreetsError(f"ArcGIS error querying {self.layer_url}: {data['error']}")
+        return [feature.get("attributes", {}).get(field) for feature in data.get("features") or []]
+
     def query(
         self,
         bbox: Extent | None = None,
         where: str = "1=1",
         out_fields: str = "*",
+        historic_moment: str | int | None = None,
     ) -> list[StreetSegment]:
         """Query centerlines, optionally restricted to ``bbox``, in EPSG:4326.
 
@@ -123,6 +229,17 @@ class CSJStreetsClient:
         Paginates via ``resultOffset``/``resultRecordCount`` until the
         service reports no more results, so this is safe to call unbounded
         against a layer with more features than one page can hold.
+
+        ``historic_moment`` forwards ArcGIS's ``historicMoment`` query
+        parameter (an epoch-millisecond timestamp, or an ISO 8601 string the
+        server accepts) - the standard way to read an *archiving-enabled*
+        layer as of a past edit moment, which is what pairing ground-truth
+        labels with a historic imagery vintage needs (CSJ Streets only
+        publishes the current network otherwise). Whether this specific
+        layer has archiving enabled is **not confirmed** - inspect
+        :meth:`get_metadata`'s ``archivingInfo`` field first, or expect this
+        to have no effect (current-moment data returned unchanged) if it
+        doesn't. See ``docs/phase2_ground_truth_rasterization.md``.
         """
         if bbox is not None and bbox.wkid != OUTPUT_WKID:
             raise ValueError(f"bbox must be EPSG:{OUTPUT_WKID}, got wkid={bbox.wkid}")
@@ -139,6 +256,8 @@ class CSJStreetsClient:
                 "resultOffset": offset,
                 "resultRecordCount": self.page_size,
             }
+            if historic_moment is not None:
+                params["historicMoment"] = historic_moment
             if bbox is not None:
                 params.update(
                     {

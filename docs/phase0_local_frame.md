@@ -41,6 +41,21 @@ with distance from the origin, so per §2/§3.2 of the integration plan, the
 manifest builder (Phase 1) is expected to construct a fresh `LocalFrame`
 per trajectory window rather than reuse one anchor for an entire flight.
 
+## Using it
+
+```python
+from csnav.geometry.local_frame import LocalFrame
+
+frame = LocalFrame(origin_lat=37.3382, origin_lon=-121.8863)
+
+point = frame.to_enu(lat=37.3562, lon=-121.8663)  # Point(east=..., north=..., up=...) meters
+back = frame.to_wgs84(point.east, point.north, point.up)  # LatLon(lat=..., lon=..., height=...)
+```
+
+Every metric geometry operation (RNP tube containment, street buffers, FOV
+projection) should go through this conversion rather than doing
+distance/area math directly on raw WGS84 degrees.
+
 ## Module layout
 
 ```

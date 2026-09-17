@@ -1,0 +1,33 @@
+{
+  // data/raw, data/cache, data/manifests, and data/dvc-storage hold cached
+  // imagery/LIDAR/DVC artifacts (data/raw/dpw_imagery alone is ~3.1M files)
+  // and are gitignored. Without these excludes, VS Code's Explorer tree and
+  // file watcher try to enumerate/watch all of them on open and crash.
+  // These settings only affect VS Code's own UI/watcher/search - the
+  // directories remain fully mounted and readable by code running in the
+  // devcontainer.
+  "files.watcherExclude": {
+    "**/data/raw/**": true,
+    "**/data/cache/**": true,
+    "**/data/manifests/**": true,
+    "**/data/dvc-storage/**": true,
+    "**/data/ground_truth/current/**": true,
+    "**/.venv/**": true
+  },
+  "files.exclude": {
+    "**/data/raw": true,
+    "**/data/cache": true,
+    "**/data/manifests": true,
+    "**/data/ground_truth/current/**": true,
+    "**/data/dvc-storage": true
+  },
+  "search.exclude": {
+    "**/data/raw/**": true,
+    "**/data/cache/**": true,
+    "**/data/manifests/**": true,
+    "**/data/dvc-storage/**": true,
+    "**/data/ground_truth/current/**": true,
+    "**/.venv/**": true
+  },
+  "python.defaultInterpreterPath": "/opt/venv/bin/python"
+}

@@ -18,3 +18,8 @@ from tests.trajectory.conftest import (  # noqa: F401
     trajectory_set,
     tube,
 )
+
+#: Reused from the ground-truth test suite for the same reason - a rendered
+#: label used in a viz test should stay in sync with what rasterize() tests
+#: check, not drift into its own fixture.
+from tests.data.ground_truth.conftest import crossing_streets, tile, transform  # noqa: F401,E402

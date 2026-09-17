@@ -173,6 +173,32 @@ how this maps onto the originally-sketched module layout.
 - Field names for width/lane counts are read generically via `attributes`
   rather than named explicitly in `StreetSegment`, since the exact schema is
   a property of the live service, not this client.
+- The layer isn't only street centerlines - a real ground-truth build found
+  non-street features occluding real streets once rasterized (see
+  `docs/phase2_ground_truth_rasterization.md`'s "Overlapping/occluding
+  segments" section). Two ambiguities had to be resolved before a filter
+  could be trusted: *which layer* (`FEATURECLASS` exists on some
+  "Streets"-named layers in CSJ's catalog but not others -
+  `ArcGISCatalog.find_layer`'s first-match-wins substring search had
+  resolved to a different layer between sessions with no change on this
+  side, and a `FEATURECLASS` filter that worked against one such layer
+  produced an ArcGIS 400 query error against another), and *which field*
+  (`STREETCLASS`/`FUNCTCLASS` looked like plausible candidates too, but
+  classify street sub-types like alley/driveway/ramp rather than
+  separating streets from non-street features). Both are now resolved:
+  `params.yaml`'s `streets.layer_url` pins the confirmed full-attribute
+  layer explicitly (`.../OPN_OpenDataService/MapServer/60`, not the sparser
+  `Underground Designated Streets`/`Paving Moratorium Streets` layers that
+  also match the "Streets" substring), and `streets.where` pins
+  `FEATURECLASS='StreetCenterline'` - the field/value that actually
+  excludes the sanitary-sewer/storm-water infrastructure lines this layer
+  also carries under other `FEATURECLASS` values. Full field/coded-value
+  reference in `docs/phase2_ground_truth_rasterization.md`'s "Reference:
+  the `Streets` layer schema (MapServer/60)" section. This client itself
+  stays schema-agnostic (`where` defaults to `"1=1"`) - the filter lives in
+  `params.yaml`/`scripts/fetch_csj_streets.py`'s CLI, not baked into the
+  client, since a different `--layer-url` could resolve to a layer with a
+  different schema entirely.
 
 ## `LidarElevationClient`
 
@@ -188,6 +214,53 @@ how this maps onto the originally-sketched module layout.
 - `get_metadata()` - the service's own reported extent/pixel size/pixel
   type, for a lightweight reachability check.
 - No `cache_dir`/download step - every call is live.
+
+## Running it
+
+Normally run via DVC (`dvc repro fetch_streets fetch_lidar` - see the
+top-level README's "Running the pipeline" section); the direct CLI is
+useful for a one-off AOI, a historic-moment pull, or debugging.
+
+### CSJ Streets
+
+```bash
+uv run python scripts/fetch_csj_streets.py \
+    --bbox -121.95 37.30 -121.85 37.36 \
+    --output data/raw/csj_streets/downtown.geojson
+```
+
+Queries the pinned, correct layer directly by default (`--layer-url`/
+`--where` - see `docs/phase2_ground_truth_rasterization.md`'s "The CSJ
+Streets layer and filter" for what they're pinned to and why), restricted
+to `--bbox` (EPSG:4326; omit to pull the whole layer), and writes the
+result as a GeoJSON `FeatureCollection`.
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--bbox MINLON MINLAT MAXLON MAXLAT` | no | whole layer | Area of interest, EPSG:4326. |
+| `--output PATH` | yes (unless `--list-fields`/`--list-layers`/`--distinct-values`) | - | GeoJSON output path. |
+| `--layer-url URL` | no | the pinned `Streets` layer | Query a different layer URL directly instead - pass `""` to fall back to name-based discovery (`--root`/`--service-name-contains`/`--layer-name-contains`). |
+| `--where SQL` | no | `FEATURECLASS='StreetCenterline'` | ArcGIS SQL WHERE clause. |
+| `--historic-moment TIMESTAMP` | no | current network | Request the network as of a past edit moment, if the layer has ArcGIS archiving enabled (unconfirmed for CSJ Streets - see `docs/phase2_ground_truth_rasterization.md`). |
+| `--list-layers` | no | off | Print every layer matching `--layer-name-contains`, then exit - for re-pinning `--layer-url` after a catalog reorganization. |
+| `--list-fields` | no | off | Print the resolved layer's fields/coded values, then exit. |
+| `--distinct-values FIELD` | no | off | Print every value FIELD actually contains, then exit. |
+
+### Ground elevation (USGS 3DEP)
+
+```bash
+uv run python scripts/fetch_lidar_elevation.py \
+    --bbox -121.95 37.30 -121.85 37.36 \
+    --output data/raw/lidar/downtown_dem.tif
+```
+
+| Flag | Required | Default | Description |
+| --- | --- | --- | --- |
+| `--bbox MINLON MINLAT MAXLON MAXLAT` | one of `--bbox`/`--identify` | - | Area to export as a raster, EPSG:4326. |
+| `--identify LON LAT` | one of `--bbox`/`--identify` | - | Print a single point's elevation instead of exporting a raster. |
+| `--output PATH` | with `--bbox` | - | GeoTIFF output path. |
+| `--width`, `--height` | no | 512, 512 | Output raster size in pixels. |
+| `--pixel-type TYPE` | no | `F32` | Output pixel type. |
 
 ## Running the tests
 

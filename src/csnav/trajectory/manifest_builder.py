@@ -33,7 +33,7 @@ from shapely.geometry import LineString, MultiLineString, Polygon
 from shapely.strtree import STRtree
 
 from csnav.data.arcgis.models import Extent, TileInfo
-from csnav.data.arcgis.streets import StreetSegment
+from csnav.data.arcgis.streets import StreetSegment, segment_geometry, street_name, street_width_m
 from csnav.geometry import shapes
 from csnav.geometry.camera import Camera
 from csnav.trajectory.coverage import (
@@ -56,15 +56,6 @@ from csnav.trajectory.transition import TransitionFamily, TransitionModel
 from csnav.trajectory.tube import TubeModel
 
 logger = logging.getLogger(__name__)
-
-#: Field names the CSJ Streets schema has used for roadway width, tried in
-#: order. The live schema owns these names, so this is a lookup list rather
-#: than a fixed contract - a manifest simply carries ``width=None`` when none
-#: of them is present.
-WIDTH_FIELD_CANDIDATES = ("WIDTH", "Width", "width", "ROADWIDTH", "RoadWidth", "PAVED_WIDTH", "STREETWIDTH")
-
-#: Field names tried for a human-readable street name, same caveat.
-NAME_FIELD_CANDIDATES = ("STREETNAME", "StreetName", "FULLNAME", "FullName", "NAME", "Name", "name")
 
 #: Distance, in meters, within which two computed junction points are treated
 #: as the same intersection. Absorbs the sub-meter jitter of clipping several
@@ -116,38 +107,7 @@ class StaticStreetsSource:
                 (bbox.xmin, bbox.ymax),
             ]
         )
-        return [segment for segment in self.segments if _segment_geometry(segment).intersects(window)]
-
-
-def _segment_geometry(segment: StreetSegment) -> LineString | MultiLineString:
-    """A street segment's centerline as a shapely geometry, in WGS84 (lon, lat)."""
-    if len(segment.parts) == 1:
-        return LineString(segment.parts[0])
-    return MultiLineString([list(part) for part in segment.parts])
-
-
-def _first_present(attributes: dict[str, Any], candidates: tuple[str, ...]) -> Any:
-    for key in candidates:
-        value = attributes.get(key)
-        if value not in (None, ""):
-            return value
-    return None
-
-
-def _segment_width(attributes: dict[str, Any]) -> float | None:
-    """Roadway width in meters from the CSJ attributes, or ``None`` if not published.
-
-    CSJ publishes widths in feet; the value is converted to meters here so
-    everything downstream of the manifest is metric, matching the ENU frame
-    used for buffers and offsets.
-    """
-    raw = _first_present(attributes, WIDTH_FIELD_CANDIDATES)
-    if raw is None:
-        return None
-    try:
-        return float(raw) * 0.3048
-    except (TypeError, ValueError):
-        return None
+        return [segment for segment in self.segments if segment_geometry(segment).intersects(window)]
 
 
 def _segment_id(segment: StreetSegment, fallback_index: int) -> str:
@@ -235,7 +195,7 @@ class ManifestBuilder:
         roads: list[ManifestLandmark] = []
         clipped_enu: list[LineString | MultiLineString] = []
         for index, segment in enumerate(segments):
-            geometry_enu = shapes.to_enu(_segment_geometry(segment), frame)
+            geometry_enu = shapes.to_enu(segment_geometry(segment), frame)
             clipped = geometry_enu.intersection(footprint_enu)
             parts_enu = shapes.line_parts(clipped)
             if not parts_enu:
@@ -250,8 +210,8 @@ class ManifestBuilder:
                     segment_id=_segment_id(segment, index),
                     parts=wgs84_parts,
                     offset=centerline_enu.distance(clipped_line),
-                    width=_segment_width(segment.attributes),
-                    name=_first_present(segment.attributes, NAME_FIELD_CANDIDATES),
+                    width=street_width_m(segment.attributes),
+                    name=street_name(segment.attributes),
                     attributes=dict(segment.attributes),
                 )
             )
