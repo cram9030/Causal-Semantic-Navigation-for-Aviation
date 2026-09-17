@@ -42,7 +42,12 @@ sample rather than every training tile.
 whose three PNGs already exist, so an interrupted run (hundreds of
 thousands of files takes a while) can just be re-invoked with the same
 arguments to pick up where it left off. Pass ``--overwrite`` to force a
-full re-render instead.
+full re-render instead. A later run into the same ``--gallery-dir`` doesn't
+have to use the same ``--limit``/``--sample`` selection either - the page
+accumulates every tile any run has ever rendered into it (via a
+``tiles.json`` manifest sidecar the gallery keeps for exactly this), so a
+smaller follow-up selection still leaves everything from a larger earlier
+run visible rather than dropping it from the page.
 
 Example (whole label set)::
 

@@ -87,17 +87,39 @@ def test_main_writes_geojson_feature_collection(tmp_path):
 
 
 @responses.activate
-def test_main_defaults_to_every_feature_no_guessed_filter(tmp_path):
-    """No default --where filter beyond "everything" - CSJ's catalog resolves "Streets" to more
-    than one layer, and which one is picked has already drifted between sessions, so a guessed
-    filter here risks silently reintroducing the same class of bug with different symptoms.
-    Use --list-layers/--list-fields/--distinct-values to find the right one deliberately instead.
+def test_main_defaults_to_the_pinned_layer_and_street_centerline_filter(tmp_path):
+    """A bare invocation (no --layer-url/--where) must hit the pinned DEFAULT_LAYER_URL directly
+    - not substring-match discovery, which is exactly the ambiguity that silently drifted onto
+    the wrong layer before (no discovery endpoint is mocked here, so a discovery attempt would
+    raise a connection error) - filtered by the confirmed FEATURECLASS='StreetCenterline',
+    which excludes the sanitary-sewer/storm-water infrastructure lines real ground-truth builds
+    found occluding real streets once rasterized.
     """
+    responses.add(responses.GET, f"{fcs.DEFAULT_LAYER_URL}/query", json={"features": []})
+
+    out_path = tmp_path / "streets.geojson"
+    argv = ["fetch_csj_streets.py", "--output", str(out_path)]
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        fcs.main()
+    finally:
+        sys.argv = old_argv
+
+    query_url = responses.calls[0].request.url
+    assert query_url.startswith(f"{fcs.DEFAULT_LAYER_URL}/query")
+    assert "where=FEATURECLASS%3D%27StreetCenterline%27" in query_url
+
+
+@responses.activate
+def test_main_where_flag_overrides_the_default_filter(tmp_path):
     layer_url = f"{SERVICE_URL}/60"
     responses.add(responses.GET, f"{layer_url}/query", json={"features": []})
 
     out_path = tmp_path / "streets.geojson"
-    argv = ["fetch_csj_streets.py", "--layer-url", layer_url, "--output", str(out_path)]
+    argv = [
+        "fetch_csj_streets.py", "--layer-url", layer_url, "--where", "1=1", "--output", str(out_path),
+    ]
     old_argv = sys.argv
     sys.argv = argv
     try:
@@ -107,6 +129,33 @@ def test_main_defaults_to_every_feature_no_guessed_filter(tmp_path):
 
     query_url = responses.calls[0].request.url
     assert "where=1%3D1" in query_url
+
+
+@responses.activate
+def test_empty_layer_url_falls_back_to_discovery(tmp_path):
+    """--layer-url "" is the documented escape hatch to re-pin after a catalog reorganization."""
+    responses.add(
+        responses.GET, BASE,
+        json={"folders": [], "services": [{"name": "OPN/OPN_OpenDataService", "type": "MapServer"}]},
+    )
+    responses.add(
+        responses.GET, SERVICE_URL,
+        json={"layers": [{"id": 60, "name": "Streets"}]},
+    )
+    responses.add(responses.GET, f"{SERVICE_URL}/60/query", json={"features": []})
+
+    out_path = tmp_path / "streets.geojson"
+    argv = [
+        "fetch_csj_streets.py", "--base-url", BASE, "--root", "", "--layer-url", "", "--output", str(out_path),
+    ]
+    old_argv = sys.argv
+    sys.argv = argv
+    try:
+        fcs.main()
+    finally:
+        sys.argv = old_argv
+
+    assert responses.calls[-1].request.url.startswith(f"{SERVICE_URL}/60/query")
 
 
 @responses.activate

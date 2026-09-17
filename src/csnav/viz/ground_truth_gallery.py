@@ -13,8 +13,12 @@ own ``localStorage``, exportable as a plain text list) is how a reviewer
 marks tiles worth a second look without leaving the page.
 
 The output is one self-contained directory (``index.html`` + ``images/`` +
-``thumbs/``) meant to be opened directly in a browser - no server needed,
-matching this project's other viz outputs (`csnav.viz.map_view.save_map`).
+``thumbs/`` + a ``tiles.json`` manifest sidecar) meant to be opened directly
+in a browser - no server needed, matching this project's other viz outputs
+(`csnav.viz.map_view.save_map`). ``tiles.json`` is what lets a later call
+into the same directory (a different ``--limit``/``--sample``/``--manifest``
+selection, not just the same one) *add to* the page instead of replacing
+it - see :func:`write_gallery`.
 """
 
 from __future__ import annotations
@@ -407,22 +411,69 @@ _SCRIPT = """
 """
 
 
+#: Sidecar next to ``index.html`` recording every tile the gallery has ever
+#: listed - what lets `write_gallery` merge instead of replace (see below).
+TILES_MANIFEST_FILENAME = "tiles.json"
+
+
+def _load_existing_tiles(output_dir: Path) -> dict[str, GalleryTile]:
+    """Previously-written tiles (by stem), from this gallery's own manifest sidecar - {} if none yet."""
+    manifest_path = output_dir / TILES_MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return {}
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tiles: dict[str, GalleryTile] = {}
+    for entry in raw:
+        entry = dict(entry)
+        entry["segments"] = tuple(entry.get("segments") or ())
+        tile = GalleryTile(**entry)
+        tiles[tile.stem] = tile
+    return tiles
+
+
 def write_gallery(
     tiles: Sequence[GalleryTile], output_dir: str | Path, title: str = "Ground truth QA gallery"
 ) -> Path:
     """Write ``index.html`` for a gallery whose per-tile PNGs are already under ``output_dir``.
 
     ``tiles`` is normally the list :func:`render_tile_images` returned for
-    each label, in the order the gallery should present them (sorted by
-    tile stem gives a stable, diffable page across reruns).
+    each label, in the order the gallery should present them - but this
+    *merges* them (by ``stem``, a fresh entry overriding a same-stem existing
+    one) into whatever this gallery directory's own `TILES_MANIFEST_FILENAME`
+    sidecar already lists, rather than replacing the page outright.
+
+    That distinction matters because a later run against the same
+    ``output_dir`` is not always the same selection as before: a smaller
+    ``--limit``/``--sample`` re-run (`scripts/visualize_ground_truth.py`),
+    or one scoped to a different ``--manifest``, still leaves every earlier
+    run's already-rendered PNGs sitting on disk under this same directory.
+    Without merging, that later run's ``index.html`` would list *only* its
+    own (smaller) selection - silently dropping every previously-included
+    tile from the page even though its images are still right there on disk
+    (a real incident: a full run followed by a ``--limit`` re-run left most
+    of a label set's thumbnails unreachable from the gallery page, looking
+    exactly like a rendering bug rather than the truncation it actually
+    was). Always writing the union instead is what makes
+    "re-invoke with the same/a smaller/a differently-scoped selection to
+    resume or extend" actually safe, rather than only safe for the exact
+    same selection every time.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    merged = _load_existing_tiles(output_dir)
+    for tile in tiles:
+        merged[tile.stem] = tile
+    ordered = sorted(merged.values(), key=lambda t: t.stem)
+
+    manifest_path = output_dir / TILES_MANIFEST_FILENAME
+    manifest_path.write_text(json.dumps([asdict(tile) for tile in ordered], indent=2), encoding="utf-8")
+
     html = _PAGE_TEMPLATE.format(
         title=title,
         css=_CSS,
         script=_SCRIPT,
-        tiles_json=_safe_json([asdict(tile) for tile in tiles]),
+        tiles_json=_safe_json([asdict(tile) for tile in ordered]),
     )
     destination = output_dir / "index.html"
     destination.write_text(html, encoding="utf-8")
@@ -450,7 +501,12 @@ def build_gallery(
     ``overwrite=False`` (the default) skips re-rendering a tile whose three
     output PNGs already exist - a full-AOI gallery can mean hundreds of
     thousands of files, so being resumable after an interrupted run matters
-    here in a way it wouldn't for a small one.
+    here in a way it wouldn't for a small one. This call's own ``tiles`` is
+    only the *current* selection, though - :func:`write_gallery` merges it
+    with whatever this ``output_dir`` already listed, so a later call scoped
+    to fewer/different tiles (a smaller ``--limit``/``--sample``, a
+    different ``--manifest``) still leaves every earlier call's tiles
+    visible on the page rather than silently dropping them.
     """
     output_dir = Path(output_dir)
     tiles = [

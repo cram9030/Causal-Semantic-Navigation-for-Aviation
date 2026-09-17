@@ -304,7 +304,7 @@ correct throughout `rasterize()`; the overlap and one-sided overwrite is
 real.
 
 **Resolved: filtering at the query, not after rasterizing.**
-`params.yaml`'s `streets.where` now pins
+`params.yaml`'s `streets.where` pins
 `"FEATURECLASS='StreetCenterline'"` against the confirmed `MapServer/60`
 layer, so non-street features (sanitary-sewer/storm-water infrastructure
 lines, parcels, address points) are excluded before they ever reach
@@ -318,6 +318,23 @@ right in isolation caused an ArcGIS query error the moment it was pointed
 at the wrong layer, which is exactly the failure mode `--list-layers`/
 `--list-fields`/`--distinct-values` exist to catch before a filter is
 trusted again.
+
+**A third guess turned out to be about which _script_ picks this up.**
+Pinning the layer/filter only in `params.yaml` fixed the `dvc repro`
+pipeline path, but `scripts/fetch_csj_streets.py` is also run directly
+(e.g. `--bbox ... --output data/raw/csj_streets/downtown.geojson`, as this
+doc's own examples show) - a path that never reads `params.yaml` at all. A
+real re-pull done this way, after the `params.yaml` fix above, still came
+back with the same wrong-OBJECTID/mass-default-width symptoms, because the
+script's own `--layer-url`/`--where` CLI defaults hadn't changed (still
+`None`/discovery and `"1=1"`). `DEFAULT_LAYER_URL`/`DEFAULT_WHERE` in
+`scripts/fetch_csj_streets.py` now carry the same confirmed values as the
+script's own defaults, so a direct invocation with no flags at all gets the
+correct layer/filter too - `params.yaml` only needs to repeat them for
+`dvc.yaml`'s benefit, not to be the sole place they're pinned. Passing
+`--layer-url ""` still falls back to substring discovery, and an explicit
+`--where` still overrides the default, for re-pinning after a future
+catalog reorganization.
 
 **This applies to Phase 1 landmark manifests too**, not just ground truth:
 `scripts/build_manifests.py --streets-geojson` reads the exact same pinned
@@ -428,6 +445,32 @@ down to N tiles (respectively: the first N by tile key, or N evenly spread
 across the whole sorted set) when even that doesn't fit - the flags apply to
 both the map and the gallery in one run, though the gallery rarely needs
 them.
+
+### Gallery: a re-run with a smaller/different selection must not drop tiles
+
+A real incident: a full gallery run (`scripts/visualize_ground_truth.py`
+with no `--limit`) followed by a second run with `--limit 500` into the
+*same* `--gallery-dir` left most of the first run's tiles unreachable from
+the page - `index.html`'s embedded `TILES` array only listed the second
+run's (smaller) selection, even though the first run's PNGs were still
+sitting on disk under the same `images/`/`thumbs/` directories. From the
+browser this looked exactly like a rendering bug (a mostly-empty gallery,
+thumbnails "missing" despite the files existing in the directory), not the
+silent `index.html` truncation it actually was - `write_gallery` was simply
+overwriting the page with whatever tiles the current call happened to
+pass, rather than accumulating across calls the way the module's own
+"resuming a large run" story implied it should.
+
+Fixed by giving the gallery directory its own `tiles.json` manifest
+sidecar: every `write_gallery` call now reads whatever this directory
+already lists, merges in the tiles from the current call (keyed by
+`stem` - a fresh render for an existing stem replaces its old entry), and
+writes the union back to both `tiles.json` and `index.html`. A later,
+smaller/differently-scoped selection (a smaller `--limit`, a different
+`--manifest`, even one call with zero matched tiles) now only *adds to* or
+*refreshes* the page, never silently shrinks it. `--overwrite` still forces
+a fresh render of a given tile's images; it does not remove any other
+tile's entry from the manifest.
 
 ## Running the tests
 

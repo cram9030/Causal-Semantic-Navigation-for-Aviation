@@ -139,12 +139,10 @@ uv run python scripts/fetch_csj_streets.py \
     --output data/raw/csj_streets/downtown.geojson
 ```
 
-Resolves the `Streets` layer by name (it lives inside a shared, generically
-named service rather than as its own top-level service - see
-[`docs/phase0_csj_streets_lidar.md`](docs/phase0_csj_streets_lidar.md)),
-queries it restricted to `--bbox` (in EPSG:4326; omit `--bbox` to pull the
-whole layer), and writes the results as a GeoJSON `FeatureCollection`.
-Pass `--layer-url` to skip discovery and query a known layer URL directly.
+Queries a pinned, confirmed layer directly by default (see below) restricted
+to `--bbox` (in EPSG:4326; omit `--bbox` to pull the whole layer), and
+writes the results as a GeoJSON `FeatureCollection`. Pass `--layer-url` to
+query a different layer URL directly instead.
 
 **"Streets" is an ambiguous name in CSJ's catalog** - 3 layers under
 `OPN/OPN_OpenDataService` match it: `Streets` (`MapServer/60`, the correct
@@ -154,15 +152,19 @@ see the full schema reference in
 `Underground Designated Streets` (`MapServer/522`, sparser, no width field
 at all), and `Paving Moratorium Streets` (`MapServer/423`, uncharacterized).
 Which one substring-match discovery resolves to has already drifted between
-sessions with no code change on this side, so `params.yaml`'s
-`streets.layer_url` now pins `MapServer/60` explicitly. That layer also
-mixes in non-street features (sanitary-sewer/storm-water infrastructure
-lines) under other `FEATURECLASS` values, which can occlude real streets
-once rasterized (see that same doc's "Overlapping/occluding segments"
-section) - `params.yaml`'s `streets.where` now pins
-`FEATURECLASS='StreetCenterline'` to exclude them. If a future pull ever
-needs re-pinning (a catalog reorganization, a schema change), three flags
-exist to nail the layer/field/value down again instead of guessing:
+sessions with no code change on this side, so `--layer-url` defaults to
+`MapServer/60` explicitly (both in the script itself, so a direct
+invocation like the one above gets it with no flags needed, and in
+`params.yaml`'s `streets.layer_url` for the `dvc repro` pipeline - the two
+had drifted out of sync once already, which is its own documented incident
+in that same doc). That layer also mixes in non-street features
+(sanitary-sewer/storm-water infrastructure lines) under other
+`FEATURECLASS` values, which can occlude real streets once rasterized (see
+that same doc's "Overlapping/occluding segments" section) - `--where`
+defaults to `FEATURECLASS='StreetCenterline'` for the same reason, to
+exclude them. If a future pull ever needs re-pinning (a catalog
+reorganization, a schema change), three flags exist to nail the
+layer/field/value down again instead of guessing:
 
 ```bash
 uv run python scripts/fetch_csj_streets.py --list-layers                          # every candidate layer

@@ -3,11 +3,11 @@
 
 Phase 0 data collection (see `docs/INTEGRATION_PLAN.md` §5): San Jose
 publishes street centerlines - with width/lane attributes, refreshed weekly -
-as one layer inside a shared ArcGIS Server service. Rather than hardcoding
-which service currently hosts it (that has already changed once, per
-`docs/phase0_csj_streets_lidar.md`), this script resolves the layer by name
-via ``ArcGISCatalog.find_layer``, queries it (optionally restricted to a
-bounding box), and writes the results as a GeoJSON ``FeatureCollection``.
+as one layer inside a shared ArcGIS Server service. By default this queries
+a pinned, confirmed layer/filter (``DEFAULT_LAYER_URL``/``DEFAULT_WHERE``,
+below) directly rather than resolving one by name every time - queries it
+(optionally restricted to a bounding box), and writes the results as a
+GeoJSON ``FeatureCollection``.
 
 This is a one-shot pull for inspecting/caching the dataset locally - it is
 *not* the "possible roads" runtime lookup (which only ever reads the
@@ -15,23 +15,26 @@ precomputed, per-trajectory-window manifest built in Phase 1) or a live
 per-frame query.
 
 **"Streets" is an ambiguous name in CSJ's catalog** - more than one layer's
-name contains it (at least a full-attribute streets layer with width/lane
-fields, and a separate, sparser "Street Centerlines" reference/geocoding
-layer with no width field at all), and which one ``ArcGISCatalog.find_layer``
-resolves to by substring match has already changed between sessions with no
-code change on this side - CSJ's catalog reorganizing is exactly the kind
-of drift `docs/phase0_csj_streets_lidar.md` already flags as a known risk.
-The layer also isn't only street centerlines even within one match - it can
-mix in other feature classes (ramps, alleys, driveways) whose geometry sits
-close enough to a real street to occlude it when later rasterized (see
+name contains it (this one, a full-attribute layer with width/lane/
+classification fields; a separate, sparser "Underground Designated Streets"
+reference/geocoding layer with no width field at all; and a third,
+uncharacterized "Paving Moratorium Streets"), and which one
+``ArcGISCatalog.find_layer``'s substring match resolves to has already
+changed between sessions with no code change on this side - CSJ's catalog
+reorganizing is exactly the kind of drift `docs/phase0_csj_streets_lidar.md`
+already flags as a known risk. That's why ``--layer-url`` defaults to a
+pinned URL rather than discovery: it can't silently drift to a different
+layer. The pinned layer also isn't only street centerlines - it mixes in
+other feature classes (sanitary-sewer/storm-water infrastructure lines,
+parcels, address points) whose geometry can sit close enough to a real
+street to occlude it when later rasterized (see
 `docs/phase2_ground_truth_rasterization.md`'s "Overlapping/occluding
 segments" section - this is what a real ground-truth build's silently-wrong
-OBJECTIDs turned out to trace back to).
+OBJECTIDs turned out to trace back to); ``--where`` defaults to the
+confirmed ``FEATURECLASS='StreetCenterline'`` filter that excludes them.
 
-Because of that ambiguity, **there is no default ``--where`` filter beyond
-"every feature"** - picking a wrong field/value silently would just
-reintroduce the same class of bug with different symptoms. Three flags exist
-specifically to nail this down without guessing:
+If the catalog ever reorganizes again (a query error, a suspiciously sparse
+pull, a schema change), three flags exist to re-pin both without guessing:
 
 * ``--list-layers`` - print every layer whose name matches
   ``--layer-name-contains`` (not just the first, unlike plain discovery),
@@ -93,6 +96,22 @@ logger = logging.getLogger("fetch_csj_streets")
 DEFAULT_ROOT = "OPN"
 DEFAULT_SERVICE_NAME_CONTAINS = "OpenDataService"
 DEFAULT_LAYER_NAME_CONTAINS = "Streets"
+#: The confirmed full-attribute Streets layer (has FOCWIDTH, FEATURECLASS,
+#: STREETCLASS/FUNCTCLASS; 35,811 records matching the City's own Open Data
+#: page for this exact layer) - pinned explicitly so a direct invocation of
+#: this script (bypassing params.yaml/dvc.yaml) doesn't fall back to
+#: substring-match discovery, which has already resolved to one of the two
+#: other "Streets"-named layers under OPN/OpenDataService in the past (see
+#: the module docstring). Pass ``--layer-url ""`` to force re-discovery if
+#: this URL ever needs re-pinning (a catalog reorganization, a new layer).
+DEFAULT_LAYER_URL = "https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/60"
+#: FEATURECLASS is a domain shared across many feature types on
+#: DEFAULT_LAYER_URL (sanitary-sewer/storm-water infrastructure, parcels,
+#: address points, not just streets) - StreetCenterline is the confirmed
+#: value for real street centerlines. See
+#: docs/phase2_ground_truth_rasterization.md's "Reference: the Streets
+#: layer schema" section for the full field/coded-value list.
+DEFAULT_WHERE = "FEATURECLASS='StreetCenterline'"
 
 
 def resolve_layer_url(args: argparse.Namespace) -> str:
@@ -157,17 +176,26 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--layer-url", default=None,
-        help="skip discovery and query this layer URL directly (e.g. .../MapServer/60)",
+        "--layer-url", default=DEFAULT_LAYER_URL,
+        help=(
+            f"query this layer URL directly instead of resolving one by name (default: the "
+            f"confirmed layer, {DEFAULT_LAYER_URL!r} - pass '' to fall back to "
+            "--root/--service-name-contains/--layer-name-contains substring discovery instead, "
+            "e.g. after a catalog reorganization)"
+        ),
     )
     parser.add_argument(
         "--bbox", type=float, nargs=4, default=None, metavar=("MINLON", "MINLAT", "MAXLON", "MAXLAT"),
         help="restrict the query to this EPSG:4326 envelope (default: the whole layer)",
     )
     parser.add_argument(
-        "--where", default="1=1",
-        help="ArcGIS SQL WHERE clause (default: every feature - see the module docstring for why "
-        "there is no more specific default here; use --list-fields/--distinct-values to find one)",
+        "--where", default=DEFAULT_WHERE,
+        help=(
+            f"ArcGIS SQL WHERE clause (default: {DEFAULT_WHERE!r}, confirmed against "
+            f"{DEFAULT_LAYER_URL!r} - see the module docstring; pass '1=1' for every feature, or "
+            "use --list-fields/--distinct-values to find a different filter against a different "
+            "--layer-url)"
+        ),
     )
     parser.add_argument(
         "--historic-moment", default=None,

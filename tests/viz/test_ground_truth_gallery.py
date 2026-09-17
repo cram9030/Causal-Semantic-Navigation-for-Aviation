@@ -142,3 +142,63 @@ def test_write_gallery_embeds_json_escaped_against_script_injection(tmp_path):
     html = index_path.read_text(encoding="utf-8")
     assert "</script><script>alert(1)" not in html
     assert "\\u003c/script\\u003e" in html
+
+
+def _tile(stem: str) -> "GalleryTile":
+    from csnav.viz.ground_truth_gallery import GalleryTile
+
+    return GalleryTile(
+        stem=stem, road_count=1, intersection_count=0, default_width_count=0, total_segments=1,
+        thumb=f"thumbs/{stem}.png", imagery=f"images/{stem}_imagery.png", label_png=f"images/{stem}_label.png",
+    )
+
+
+def test_write_gallery_merges_with_a_smaller_later_selection(tmp_path):
+    """Regression test for a real incident: a full gallery run followed by a smaller
+    --limit/--sample re-run into the same --gallery-dir must not drop the tiles the first
+    run already rendered - their PNGs are still sitting on disk, just no longer reachable
+    from the page, which looked exactly like a rendering bug rather than the silent
+    index.html truncation it actually was.
+    """
+    output_dir = tmp_path / "gallery"
+    write_gallery([_tile("a"), _tile("b"), _tile("c")], output_dir)
+
+    index_path = write_gallery([_tile("a")], output_dir)
+
+    stems = {t["stem"] for t in json.loads(index_path.read_text(encoding="utf-8").split("var TILES = ", 1)[1].split(";\n", 1)[0])}
+    assert stems == {"a", "b", "c"}
+
+
+def test_write_gallery_a_fresh_render_overrides_the_same_stems_data(tmp_path):
+    """A tile re-rendered on a later call (e.g. --overwrite after a data fix) should win over
+    its own earlier, stale entry - merging must not just keep whichever came first.
+    """
+    from csnav.viz.ground_truth_gallery import GalleryTile
+
+    output_dir = tmp_path / "gallery"
+    write_gallery([_tile("a")], output_dir)
+
+    refreshed = GalleryTile(
+        stem="a", road_count=9, intersection_count=0, default_width_count=0, total_segments=9,
+        thumb="thumbs/a.png", imagery="images/a_imagery.png", label_png="images/a_label.png",
+    )
+    index_path = write_gallery([refreshed], output_dir)
+
+    tiles = json.loads(index_path.read_text(encoding="utf-8").split("var TILES = ", 1)[1].split(";\n", 1)[0])
+    by_stem = {t["stem"]: t for t in tiles}
+    assert by_stem["a"]["road_count"] == 9
+
+
+def test_build_gallery_extends_rather_than_replaces_a_prior_smaller_gallery(tmp_path, label, imagery_path):
+    """End-to-end version of the merge regression, through build_gallery/render_tile_images
+    rather than write_gallery directly.
+    """
+    output_dir = tmp_path / "gallery"
+    build_gallery([(label, imagery_path)], output_dir)
+
+    # A second, empty-selection call (e.g. a --limit that matched nothing this time) must
+    # still leave the first call's tile visible on the page.
+    index_path = build_gallery([], output_dir)
+
+    html = index_path.read_text(encoding="utf-8")
+    assert label.stem in html
