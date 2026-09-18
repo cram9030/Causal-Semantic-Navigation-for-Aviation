@@ -85,6 +85,16 @@ class SegmentInfo:
     properties alongside that guess is what lets a reviewer confirm or
     correct it by looking at exactly what CSJ actually published for that
     ``OBJECTID``, rather than only this module's interpretation of it.
+
+    ``name``/``attributes`` are populated for an ``INTERSECTION`` instance
+    too, but only when `csnav.data.ground_truth.rasterize.GroundTruthBuilder.rasterize`
+    was given CSJ's separate ``Street Intersections`` point layer
+    (`csnav.data.arcgis.intersections`) and this junction matched one of its
+    points within ``intersection_snap_m`` - ``name`` is that intersection's
+    real name (e.g. ``"N 5th St & E Julian St"``) and ``attributes`` its raw
+    properties (leg count, traffic control type, ...), not the crossing
+    roads' own attributes. Left at their defaults (``None``/``{}``) when no
+    such layer was supplied or no point was close enough.
     """
 
     instance_id: int

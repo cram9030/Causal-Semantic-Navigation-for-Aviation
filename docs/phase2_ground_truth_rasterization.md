@@ -19,10 +19,15 @@ src/csnav/viz/
 ├── ground_truth_view.py     # folium review map: tile footprints, vectorized roads/intersections
 └── ground_truth_gallery.py  # static paged HTML QA gallery: imagery/label PNGs + opacity slider, flagging
 
-scripts/build_ground_truth.py       # rasterize a label set (full AOI grid, or scoped to a pinned manifest)
-scripts/check_ground_truth.py       # run the automated checks over a label set, exit non-zero on error
-scripts/visualize_ground_truth.py   # render the review map and/or the QA gallery for a label set
+scripts/build_ground_truth.py         # rasterize a label set (full AOI grid, or scoped to a pinned manifest)
+scripts/check_ground_truth.py         # run the automated checks over a label set, exit non-zero on error
+scripts/visualize_ground_truth.py     # render the review map and/or the QA gallery for a label set
+scripts/fetch_csj_intersections.py    # pull CSJ's Street Intersections point layer for an AOI (optional enrichment input)
 ```
+
+`src/csnav/data/arcgis/intersections.py` (`CSJIntersectionsClient`, `StreetIntersection`)
+is the client for that separate intersections layer - see "CSJ's `Street
+Intersections` layer" below for what it is and how it's used.
 
 As with Phases 0/1, this lives under `src/csnav/` as `csnav.data.ground_truth`
 rather than a separate top-level `data/ground_truth/` tree - one installable
@@ -82,6 +87,7 @@ uv run python scripts/build_ground_truth.py \
 | --- | --- | --- | --- |
 | `--imagery-dir PATH` | yes | - | Directory of `{level}_{row}_{col}.tif` tiles to label. |
 | `--streets-geojson PATH` | yes | - | An archived pull from `fetch_csj_streets.py`, never a live query - see "Pairing imagery vintages with a matching street network" below. |
+| `--street-intersections-geojson PATH` | no | off | An archived pull from `fetch_csj_intersections.py` - enriches a derived intersection's name/leg-count/traffic-control metadata when it matches one of these points; never changes where or how big an intersection is rasterized. See "CSJ's `Street Intersections` layer" below. |
 | `--output-dir PATH` | yes | - | Where to write each tile's 2-band GeoTIFF + JSON sidecar. |
 | `--manifest PATH` | no | off | Restrict to one pinned `ManifestBundle`'s tiles instead of every tile under `--imagery-dir` - a smaller regional-sensitivity run rather than the full AOI. |
 | `--default-width-m M` | no | 6.0 | Fallback width for a segment CSJ doesn't publish one for. |
@@ -291,23 +297,91 @@ road meeting there is narrower than that. `intersection_radius_m` is
 unchanged in meaning for two narrow streets crossing - it's a floor, not a
 value that stops being read once any road is wider.
 
-**Not yet implemented: shaping a derived intersection from CSJ's own
-`Street Intersections` layer.** San Jose separately publishes point features
-for real intersections (`INTID`, `INTERSECTIONTYPE` e.g. "4 Leg", street
-names on each leg, traffic-control type - see the Open Data example under
-`Street Intersections` cross-referenced in this project's issue history).
-Its `Shape` field's actual geometry type (point vs. polygon footprint) was
-not confirmed at the time `_intersection_radius` was written - this
-project's network access when that code was written could not reach San
-Jose's ArcGIS REST endpoints to check `?f=json`'s `geometryType`, and
-CLAUDE.md's/this project's convention is not to guess at an external
-service's schema. A derived circle sized off the intersecting roads (as
-implemented) is a reasonable interim behavior; using the real layer instead
-- for `INTERSECTIONTYPE`-aware shaping, e.g. a "3 Leg"/T-intersection versus
-a "4 Leg" - needs its REST layer URL confirmed (analogous to how
-`DEFAULT_LAYER_URL`/`DEFAULT_WHERE` were pinned for CSJ Streets, see "The
-CSJ Streets layer and filter" below) before it can be fetched and used the
-same pinned-per-vintage way `--streets-geojson` already is.
+### CSJ's `Street Intersections` layer: metadata enrichment, not a footprint
+
+San Jose separately publishes named street-intersection *locations* -
+`csnav.data.arcgis.intersections`, fetched by `scripts/fetch_csj_intersections.py`
+- distinct from the `Streets` centerline layer above. Its schema was
+initially unconfirmed (this project's own network access can't reach San
+Jose's ArcGIS REST endpoints, and CLAUDE.md's convention is not to guess at
+an external service's schema); confirmed by running discovery
+(`ArcGISCatalog.find_layers('Intersection')`, then `?f=json` against the
+resulting candidate) from an environment with real access:
+
+* **Layer:** `https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/276`
+  ("Street Intersections"). San Jose's catalog has several other
+  "Intersection"-named layers under other services (traffic-signal-specific
+  layers, a railroad-crossing layer, planning-department duplicates of this
+  same layer) - this URL is pinned the same deliberate way
+  `csnav.data.arcgis.streets.DEFAULT_LAYER_URL` is, not resolved by
+  substring match at runtime.
+* **`geometryType` is `esriGeometryPoint`.** This is the single fact that
+  decided how this layer gets used: it publishes intersection *locations*,
+  never a polygon footprint. It can enrich a derived intersection instance
+  once matched to one of these points; it cannot replace the width-derived
+  circle above as a physical shape to rasterize, because there is no polygon
+  geometry here to measure one from. A per-`INTERSECTIONTYPE` size
+  multiplier (e.g. "a 4-leg intersection gets N extra meters") was
+  considered and rejected for the same reason a Hermite spline was rejected
+  above: it would be a different unverified guess, not a measurement.
+* **`INTTYPE`** is a coded-value domain - `Intersection`, `End`, `Muni`,
+  `Non-Intersection`, `Ramp`, `Range Exception`. Only `'Intersection'` rows
+  are genuine street-crossing junctions; `DEFAULT_WHERE` filters to it,
+  mirroring `FEATURECLASS='StreetCenterline'`'s role for the Streets layer.
+* **`INTERSECTIONTYPE`** (leg count: `2 Leg`/`3 Leg`/`4 Leg`/
+  `Light Rail Crossing`) and **`TRAFFICCONTROLTYPE`** (`Signal`,
+  `4 Way Stop`, `No Control`, ...) are read through unfiltered as metadata.
+
+**How it's wired in:** `GroundTruthBuilder.rasterize`'s optional
+`street_intersections` parameter (`scripts/build_ground_truth.py`'s
+`--street-intersections-geojson`, an archived pull just like
+`--streets-geojson`) is matched against each *derived* junction - the
+geometric crossing-detection in `_derive_intersections` (over the Streets
+centerlines) remains the thing that decides an intersection instance exists
+at all, since not every real pavement crossing is necessarily a named row in
+this secondary reference layer, and ground truth needs every crossing
+labeled, not just the officially-named/signaled ones. `_nearest_intersection`
+finds the closest real point within `intersection_snap_m`; when one matches,
+that instance's `SegmentInfo.name`/`attributes` are set from the real
+intersection's `INTNAME`/raw properties (leg count, traffic control, ...)
+instead of staying at their defaults - the same two fields a `ROAD` instance
+already carries, not new schema. No match within range leaves the instance
+exactly as it was before this parameter existed. **Not yet wired into
+`dvc.yaml`/`params.yaml`'s per-vintage pipeline** - `--street-intersections-geojson`
+works from a direct script invocation today; adding a `fetch_street_intersections`
+DVC stage and a `street_intersections_geojson` entry per
+`ground_truth.vintages` item is a natural follow-up once this is wanted as a
+standing pipeline input rather than an opt-in flag.
+
+### Reference: the `Street Intersections` layer schema (MapServer/276)
+
+Recorded here so nobody has to re-derive it by hand, same reasoning as the
+Streets schema reference below. Source: `?f=json` against
+`https://geo.sanjoseca.gov/server/rest/services/OPN/OPN_OpenDataService/MapServer/276`.
+Display field: `INTNAME`. Geometry: `esriGeometryPoint`.
+
+| Field | Type | Coded values |
+| --- | --- | --- |
+| `OBJECTID` | esriFieldTypeOID | |
+| `INTID` | esriFieldTypeInteger | DOT's own integer intersection id |
+| **`INTNAME`** | esriFieldTypeString(100) | human-readable name, e.g. `"N 5th St & E Julian St"` |
+| **`INTTYPE`** | esriFieldTypeString(25) | `End`, `Intersection`, `Muni`, `Non-Intersection`, `Ramp`, `Range Exception` - filter to `Intersection` (`DEFAULT_WHERE`) |
+| **`INTERSECTIONTYPE`** | esriFieldTypeString(10) | `2 Leg`, `3 Leg`, `4 Leg`, `Light Rail Crossing` |
+| **`TRAFFICCONTROLTYPE`** | esriFieldTypeString(15) | `1 Way Stop`, `2 Way Stop`, `3 Way Stop`, `4 Way Stop`, `No Control`, `Signal`, `Yield sign` |
+| `ASTREETNAME`/`BSTREETNAME` | esriFieldTypeString(40) | the two named cross streets |
+| `ASTREETDIRECTION`/`BSTREETDIRECTION` | esriFieldTypeString(20) | `East-West`, `North-South` |
+| `ASTREETTYPE`/`BSTREETTYPE` | esriFieldTypeString(40) | `Arterial (AR)`, `Freeway/Expressway (CA)`, `Local (LO)`, `Major Street (MA)`, `Neighborhood Collector (NC)` |
+| `DEVICETYPE` | esriFieldTypeString(50) | `Traffic Signal`, `HAWK`, `RRFB`, `Overhead Flashing Beacon`, ... (14 total) |
+| `SHOPSTATUS` | esriFieldTypeString(25) | `Existing`, `Future`, `Cancelled`, `Deactivated`, `Owned by Other`, `Existing-To be Modified` |
+| `LONGITUDE`/`LATITUDE` | esriFieldTypeDouble | redundant with `Shape`'s own point geometry - not read here |
+| `Shape` | esriFieldTypeGeometry | the point geometry itself |
+
+A handful of DOT-internal administrative fields (`FACILITYID`, `SHOPID`,
+`MAINTID`, `LOSNO`, `PLANCRT`/`PLANMOD`, `RSN`, `OWNEDBY`, `SHOPOPERATOR`,
+`FLAG`, `MODELFLAG`, `PRIVATE`/`INCORPORATED`, `ACTIVATIONDATE`,
+`LASTUPDATE`/`CREATIONDATE`, `NOTES`) exist on this layer too but aren't
+relevant to any decision this project makes - get the full list with
+`scripts/fetch_csj_intersections.py --list-fields` if needed.
 
 ### `rasterize()` is a pure function of geometry, not a live-fetching step
 

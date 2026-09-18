@@ -17,7 +17,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import build_ground_truth as bgt  # noqa: E402
 
-from csnav.data.ground_truth.labels import PanopticLabel  # noqa: E402
+from csnav.data.ground_truth.labels import PanopticClass, PanopticLabel  # noqa: E402
 from csnav.trajectory.manifest import ManifestBundle  # noqa: E402
 from csnav.trajectory.trajectory import TrajectoryWindow  # noqa: E402
 from csnav.trajectory.manifest import LandmarkManifest  # noqa: E402
@@ -137,6 +137,56 @@ def test_build_ground_truth_restricts_to_manifest_tiles(tmp_path, streets_geojso
     )
     assert (output_dir / "18_100_200.tif").exists()
     assert not (output_dir / "18_999_999.tif").exists()
+
+
+def test_build_ground_truth_enriches_intersection_from_street_intersections_geojson(tmp_path, imagery_dir, monkeypatch):
+    center_lon = (BOUNDS[0] + BOUNDS[2]) / 2.0
+    center_lat = (BOUNDS[1] + BOUNDS[3]) / 2.0
+    crossing_streets = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [[BOUNDS[0], center_lat], [BOUNDS[2], center_lat]]},
+                "properties": {"OBJECTID": 1, "WIDTH": 40.0},
+            },
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [[center_lon, BOUNDS[1]], [center_lon, BOUNDS[3]]]},
+                "properties": {"OBJECTID": 2, "WIDTH": 40.0},
+            },
+        ],
+    }
+    streets_path = tmp_path / "crossing_streets.geojson"
+    streets_path.write_text(json.dumps(crossing_streets))
+
+    intersections = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [center_lon, center_lat]},
+                "properties": {"OBJECTID": 1, "INTNAME": "Test St & Cross St", "INTERSECTIONTYPE": "4 Leg"},
+            },
+        ],
+    }
+    intersections_path = tmp_path / "intersections.geojson"
+    intersections_path.write_text(json.dumps(intersections))
+
+    output_dir = tmp_path / "out"
+    _run(
+        [
+            "--imagery-dir", str(imagery_dir), "--streets-geojson", str(streets_path),
+            "--street-intersections-geojson", str(intersections_path), "--output-dir", str(output_dir),
+        ],
+        monkeypatch,
+    )
+
+    label = PanopticLabel.load(output_dir / "18_100_200.tif")
+    intersection_segments = [s for s in label.segments if s.class_id == int(PanopticClass.INTERSECTION)]
+    assert len(intersection_segments) == 1
+    assert intersection_segments[0].name == "Test St & Cross St"
+    assert intersection_segments[0].attributes["INTERSECTIONTYPE"] == "4 Leg"
 
 
 def test_build_ground_truth_rejects_non_4326_imagery(tmp_path, streets_geojson, monkeypatch):

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from shapely.geometry import LineString
 
+from csnav.data.arcgis.intersections import StreetIntersection
 from csnav.data.arcgis.streets import StreetSegment
 from csnav.data.ground_truth.labels import PanopticClass
 from csnav.data.ground_truth.rasterize import GroundTruthBuilder, _chain_runs, _intersection_radius
@@ -239,6 +240,45 @@ def test_road_width_is_flush_at_the_tile_edge_not_rounded_off(tile, transform):
     # edges.
     assert np.all(road_col_counts > 0)
     assert road_col_counts.min() == road_col_counts.max()
+
+
+# ----- CSJ Street Intersections metadata enrichment -----
+
+
+def test_matched_street_intersection_enriches_the_instance(tile, transform, crossing_streets):
+    real_intersection = StreetIntersection(
+        object_id=1, lon=ORIGIN_LON, lat=ORIGIN_LAT,
+        attributes={"INTNAME": "First St & Second St", "INTERSECTIONTYPE": "4 Leg", "TRAFFICCONTROLTYPE": "Signal"},
+    )
+    builder = GroundTruthBuilder()
+    label = builder.rasterize(crossing_streets, tile, 64, 64, transform, street_intersections=[real_intersection])
+
+    intersection_segments = [s for s in label.segments if s.class_id == int(PanopticClass.INTERSECTION)]
+    assert len(intersection_segments) == 1
+    assert intersection_segments[0].name == "First St & Second St"
+    assert intersection_segments[0].attributes["INTERSECTIONTYPE"] == "4 Leg"
+
+
+def test_street_intersection_outside_snap_tolerance_does_not_match(tile, transform, crossing_streets):
+    far_intersection = StreetIntersection(
+        object_id=1, lon=TILE_BOUNDS.xmax, lat=TILE_BOUNDS.ymax, attributes={"INTNAME": "Nowhere Near It"}
+    )
+    builder = GroundTruthBuilder()
+    label = builder.rasterize(crossing_streets, tile, 64, 64, transform, street_intersections=[far_intersection])
+
+    intersection_segments = [s for s in label.segments if s.class_id == int(PanopticClass.INTERSECTION)]
+    assert len(intersection_segments) == 1
+    assert intersection_segments[0].name is None
+    assert intersection_segments[0].attributes == {}
+
+
+def test_no_street_intersections_supplied_leaves_instances_unenriched(tile, transform, crossing_streets):
+    builder = GroundTruthBuilder()
+    label = builder.rasterize(crossing_streets, tile, 64, 64, transform)
+
+    intersection_segments = [s for s in label.segments if s.class_id == int(PanopticClass.INTERSECTION)]
+    assert intersection_segments[0].name is None
+    assert intersection_segments[0].attributes == {}
 
 
 # ----- _chain_runs (endpoint-adjacency grouping) -----

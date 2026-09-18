@@ -62,6 +62,7 @@ from rasterio.transform import Affine
 from shapely.geometry import LineString, MultiLineString, Point as ShapelyPoint, box
 from shapely.strtree import STRtree
 
+from csnav.data.arcgis.intersections import StreetIntersection, intersection_name
 from csnav.data.arcgis.streets import StreetSegment, segment_geometry, street_master_id, street_name, street_width_m
 from csnav.data.ground_truth.labels import PanopticClass, PanopticLabel, SegmentInfo
 from csnav.geometry import shapes
@@ -260,6 +261,28 @@ def _intersection_radius(ids: Sequence[str], width_by_id: dict[str, float], floo
     return max(floor, widest / 2.0)
 
 
+def _nearest_intersection(
+    east: float, north: float, candidates: Sequence[tuple[float, float, StreetIntersection]], snap: float
+) -> StreetIntersection | None:
+    """The closest of CSJ's named ``Street Intersections`` points to one derived junction, in ENU meters.
+
+    ``candidates`` are ``(east, north, StreetIntersection)`` triples, already
+    projected into this tile's `LocalFrame`. Returns ``None`` when nothing is
+    within ``snap`` meters - a derived junction with no real CSJ intersection
+    record nearby (e.g. a driveway crossing, or simply a gap in this
+    reference layer) is rasterized exactly as it was before this match was
+    attempted, not treated as an error.
+    """
+    best: StreetIntersection | None = None
+    best_distance2 = snap**2
+    for candidate_east, candidate_north, intersection in candidates:
+        distance2 = (east - candidate_east) ** 2 + (north - candidate_north) ** 2
+        if distance2 <= best_distance2:
+            best_distance2 = distance2
+            best = intersection
+    return best
+
+
 @dataclass
 class GroundTruthBuilder:
     """Rasterizes CSJ street geometry into a `PanopticLabel`, one imagery tile at a time.
@@ -291,6 +314,7 @@ class GroundTruthBuilder:
         transform: Affine,
         streets_source: str | None = None,
         imagery_source: str | None = None,
+        street_intersections: Sequence[StreetIntersection] | None = None,
     ) -> PanopticLabel:
         """Rasterize ``streets`` onto ``tile``'s ``(width, height)`` pixel grid.
 
@@ -300,6 +324,17 @@ class GroundTruthBuilder:
         ``streets`` need not already be clipped to the tile: only the portion
         intersecting ``tile.bounds`` is used. Returns an all-background label
         (valid, not an error) when nothing intersects.
+
+        ``street_intersections`` is optional CSJ ``Street Intersections``
+        metadata (`csnav.data.arcgis.intersections`) - when supplied, a
+        derived junction within ``intersection_snap_m`` of one of these
+        points is enriched with its real name/leg-count/traffic-control
+        attributes (``SegmentInfo.name``/``attributes``, same fields a
+        ``ROAD`` instance already carries), matching the closest point rather
+        than every point within range. This is metadata enrichment only -
+        that layer carries point geometry, not a polygon footprint, so it
+        never changes *where* or *how big* a derived intersection is
+        rasterized; see `docs/phase2_ground_truth_rasterization.md`.
         """
         bounds = tile.bounds
         tile_box = box(bounds.xmin, bounds.ymin, bounds.xmax, bounds.ymax)
@@ -311,6 +346,11 @@ class GroundTruthBuilder:
         # centerline to before buffering - see this module's docstring for
         # why buffering happens against this padded box, not the tile box.
         pad_box_enu = tile_box_enu.buffer(BUFFER_PAD_M, cap_style="square", join_style="mitre")
+
+        intersection_candidates_enu: list[tuple[float, float, StreetIntersection]] = []
+        for street_intersection in street_intersections or ():
+            point_enu = frame.to_enu(street_intersection.lat, street_intersection.lon)
+            intersection_candidates_enu.append((point_enu.east, point_enu.north, street_intersection))
 
         clipped_enu: list[_LineGeom] = []
         padded_enu: list[_LineGeom] = []
@@ -433,11 +473,14 @@ class GroundTruthBuilder:
             for polygon in polygons:
                 burn_semantic.append((polygon, int(PanopticClass.INTERSECTION)))
                 burn_instance.append((polygon, instance_id))
+            matched = _nearest_intersection(east, north, intersection_candidates_enu, self.intersection_snap_m)
             segments.append(
                 SegmentInfo(
                     instance_id=instance_id,
                     class_id=int(PanopticClass.INTERSECTION),
                     intersection_segment_ids=ids,
+                    name=intersection_name(matched.attributes) if matched is not None else None,
+                    attributes=dict(matched.attributes) if matched is not None else {},
                 )
             )
 

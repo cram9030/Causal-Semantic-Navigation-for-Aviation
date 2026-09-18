@@ -69,6 +69,7 @@ from shapely.strtree import STRtree  # noqa: E402
 
 import rasterio  # noqa: E402
 
+from csnav.data.arcgis.intersections import intersection_point, intersections_from_geojson  # noqa: E402
 from csnav.data.arcgis.models import Extent  # noqa: E402
 from csnav.data.arcgis.streets import segment_geometry, segments_from_geojson  # noqa: E402
 from csnav.data.ground_truth.labels import PanopticLabel  # noqa: E402
@@ -91,6 +92,15 @@ _TILE_FILENAME = re.compile(r"^(\d+)_(\d+)_(\d+)\.tif$")
 #: produces the imagery GeoTIFFs this script reads.
 EXPECTED_CRS = "EPSG:4326"
 
+#: Degrees a tile's box is padded by before querying candidate Street
+#: Intersections points against it - roughly 100 m, deliberately coarser
+#: than any realistic --intersection-snap-m so a real point just outside the
+#: tile's own box is never missed by this prefilter. The exact match (ENU
+#: distance against intersection_snap_m) happens inside
+#: GroundTruthBuilder.rasterize() itself; this is only a cheap way to narrow
+#: which points are even worth handing it.
+INTERSECTION_QUERY_PAD_DEG = 0.001
+
 
 def _tiles_from_imagery_dir(imagery_dir: Path) -> list[TileRef]:
     """Every ``{level}_{row}_{col}.tif`` under ``imagery_dir``, bounds read from the raster itself."""
@@ -111,6 +121,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--imagery-dir", type=Path, required=True, help="directory of {level}_{row}_{col}.tif tiles")
     parser.add_argument("--streets-geojson", type=Path, required=True, help="archived CSJ Streets GeoJSON pull")
+    parser.add_argument(
+        "--street-intersections-geojson", type=Path, default=None,
+        help="archived CSJ Street Intersections GeoJSON pull (scripts/fetch_csj_intersections.py) - "
+        "optional; when given, a derived intersection close to one of these points is enriched with "
+        "its real name/leg-count/traffic-control metadata (does not change where or how big an "
+        "intersection is rasterized - see docs/phase2_ground_truth_rasterization.md)",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--manifest", type=Path, default=None,
@@ -136,6 +153,17 @@ def main() -> None:
     logger.info("loaded %d street segments from %s", len(segments), args.streets_geojson)
     geometries = [segment_geometry(segment) for segment in segments]
     tree = STRtree(geometries)
+
+    street_intersections = None
+    intersections_tree = None
+    if args.street_intersections_geojson is not None:
+        street_intersections = intersections_from_geojson(
+            json.loads(args.street_intersections_geojson.read_text(encoding="utf-8"))
+        )
+        logger.info(
+            "loaded %d street intersection(s) from %s", len(street_intersections), args.street_intersections_geojson
+        )
+        intersections_tree = STRtree([intersection_point(i) for i in street_intersections])
 
     if args.manifest is not None:
         tiles = list(ManifestBundle.load(args.manifest).all_tiles())
@@ -174,10 +202,23 @@ def main() -> None:
         tile_box = box(tile.bounds.xmin, tile.bounds.ymin, tile.bounds.xmax, tile.bounds.ymax)
         candidates = [segments[i] for i in tree.query(tile_box)]
 
+        intersection_candidates = None
+        if intersections_tree is not None:
+            # A generous fixed-degree pad (~100 m), not intersection_snap_m
+            # itself: this is only a coarse prefilter so a real point just
+            # outside the tile's own box isn't missed - rasterize() does the
+            # exact ENU-distance match against intersection_snap_m.
+            query_box = box(
+                tile.bounds.xmin - INTERSECTION_QUERY_PAD_DEG, tile.bounds.ymin - INTERSECTION_QUERY_PAD_DEG,
+                tile.bounds.xmax + INTERSECTION_QUERY_PAD_DEG, tile.bounds.ymax + INTERSECTION_QUERY_PAD_DEG,
+            )
+            intersection_candidates = [street_intersections[i] for i in intersections_tree.query(query_box)]
+
         label = builder.rasterize(
             candidates, tile, width, height, transform,
             streets_source=str(args.streets_geojson),
             imagery_source=str(imagery_path),
+            street_intersections=intersection_candidates,
         )
         label.save(args.output_dir)
         written += 1
