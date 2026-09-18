@@ -67,7 +67,12 @@ class TileCheckReport:
 
 #: Fraction of a label set's segments using the fallback width above which
 #: `check_label` warns that CSJ's own width attribute is thin for this area -
-#: a data-quality signal worth surfacing, not a hard failure.
+#: a data-quality signal worth surfacing, not a hard failure. "Segments" here
+#: means rasterized ROAD *instances* (`label.segments`), not raw CSJ
+#: `OBJECTID`s - where `rasterize()` merges several contiguous same-width
+#: CSJ rows into one continuous instance (see
+#: `docs/phase2_ground_truth_rasterization.md`'s "Continuous rasterization"),
+#: each merged run counts once here, not once per constituent `OBJECTID`.
 DEFAULT_WIDTH_WARN_FRACTION = 0.5
 
 

@@ -117,7 +117,11 @@ ground_truth:
   # CSJ's own width fields - CLAUDE.md's "config lives in versioned config
   # files" convention, not a constant in csnav.data.ground_truth.rasterize.
   default_width_m: 6.0
-  # Radius (meters) a derived road-road intersection is rasterized as.
+  # Floor (meters) a derived road-road intersection's radius is rasterized
+  # at - the actual radius also grows to half the widest intersecting road's
+  # rasterized width where that's bigger than this floor, so a wide arterial
+  # never pinches down to fit a fixed-size intersection circle. See
+  # docs/phase2_ground_truth_rasterization.md.
   intersection_radius_m: 3.0
   # Clustering tolerance (meters) for merging nearby computed junction points
   # into one intersection instance.

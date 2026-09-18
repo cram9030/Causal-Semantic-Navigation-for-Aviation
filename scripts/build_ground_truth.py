@@ -118,7 +118,11 @@ def main() -> None:
         "tile under --imagery-dir",
     )
     parser.add_argument("--default-width-m", type=float, default=DEFAULT_WIDTH_M)
-    parser.add_argument("--intersection-radius-m", type=float, default=DEFAULT_INTERSECTION_RADIUS_M)
+    parser.add_argument(
+        "--intersection-radius-m", type=float, default=DEFAULT_INTERSECTION_RADIUS_M,
+        help="floor for a derived intersection's radius - it also grows to half the widest "
+        "intersecting road's width where that's bigger (default: %(default)s)",
+    )
     parser.add_argument("--intersection-snap-m", type=float, default=DEFAULT_INTERSECTION_SNAP_M)
     parser.add_argument(
         "--overwrite", action="store_true", help="re-rasterize tiles even if their label already exists"

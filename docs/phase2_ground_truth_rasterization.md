@@ -85,7 +85,7 @@ uv run python scripts/build_ground_truth.py \
 | `--output-dir PATH` | yes | - | Where to write each tile's 2-band GeoTIFF + JSON sidecar. |
 | `--manifest PATH` | no | off | Restrict to one pinned `ManifestBundle`'s tiles instead of every tile under `--imagery-dir` - a smaller regional-sensitivity run rather than the full AOI. |
 | `--default-width-m M` | no | 6.0 | Fallback width for a segment CSJ doesn't publish one for. |
-| `--intersection-radius-m M` | no | 3.0 | Radius a derived intersection is rasterized as. |
+| `--intersection-radius-m M` | no | 3.0 | Floor for a derived intersection's radius - it also grows to half the widest intersecting road's width where that's bigger (see "A derived intersection's radius scales with the roads meeting there" below). |
 | `--intersection-snap-m M` | no | 2.0 | Clustering tolerance for merging nearby junction points into one intersection instance. |
 | `--overwrite` | no | off | Re-rasterize a tile whose label file already exists. |
 
@@ -203,6 +203,111 @@ rasterized centerlines (a junction-clustering pass, the same algorithm
 `ManifestBuilder._intersections` uses, adapted to one tile instead of one
 trajectory window) rather than sourced from a separate CSJ dataset - CSJ
 Streets only publishes centerlines.
+
+### Continuous rasterization: buffer the whole road, then clip to the tile
+
+An early version of `rasterize()` clipped each CSJ centerline to the tile
+first and buffered the clipped line - which left a rounded end cap sitting
+exactly on the cut. Two places that showed up as a visible defect:
+
+- **Tile edges.** A street crossing a tile boundary rasterized with a
+  semicircular "bite" right at the edge instead of running flush to it, so
+  the same street looked pinched in one tile and normal in its neighbor.
+- **CSJ splits.** CSJ gives a physical street a fresh `OBJECTID` at every
+  cross-street even where nothing about the street itself changes: same
+  name, same width, same road. Buffering each `OBJECTID` on its own left a
+  rounded notch at every one of those splits, even mid-block, wherever the
+  street plainly continues straight through.
+
+The fix is buffering order, not a different curve-fitting model (a Hermite
+spline was considered - see "Options considered and set aside" below):
+
+1. Clip each candidate's centerline to a small margin around the tile
+   (`BUFFER_PAD_M`, 50 m) rather than to the tile's own exact box. This
+   keeps the geometry within the `LocalFrame` anchor's accurate range while
+   giving enough room that any genuinely-computational cut (as opposed to a
+   real street end) lands safely outside the tile.
+2. Merge same-identity, same-width, contiguous candidates end-to-end into
+   one continuous line (`_chain_runs`) - "same identity" means the same CSJ
+   `STREETMASTERID` (the field CSJ publishes specifically to say "these rows
+   are the same logical street"; see `csnav.data.arcgis.streets.street_master_id`),
+   *and* the same rasterized width, default-width status, and name. Matching
+   only on `STREETMASTERID` and letting a genuine width/name difference blend
+   away silently was rejected: an exact match on all four is conservative by
+   construction - a mismatch (a narrower block, a name that doesn't line up)
+   just leaves that particular join unmerged, which falls back to the
+   previous (flat-capped, not rounded) per-segment behavior rather than ever
+   fabricating a width that isn't real. **Whether `STREETMASTERID` is
+   actually populated across the live dataset (as opposed to merely present
+   in the schema) has not been verified against real data** - if it turns
+   out sparse, merging simply finds fewer runs to combine, degrading
+   gracefully to "every segment still gets a flat cap instead of a round
+   one" rather than failing.
+3. Buffer the merged (or, where nothing to merge, single) line with **flat**
+   end caps (`cap_style="flat"`), not the default round - a flat cap is the
+   right shape for wherever a road only meets an intersection, since the
+   intersection polygon (see below) is what should read as the junction
+   there, not the road's own cap.
+4. Only *then* intersect the buffered polygon with the tile's exact box.
+
+One knock-on correctness issue merging introduced, worth knowing if this
+code is touched again: junction detection (`_derive_intersections`) still
+runs on the original, per-`OBJECTID` centerlines, since it has no notion of
+which `OBJECTID`s ended up merged - so without a filter, every CSJ split
+that step 2 just smoothed over would still register as a "junction" between
+two segments and stamp a spurious intersection instance right on top of the
+merge. `rasterize()` drops any detected junction whose constituent segment
+ids all resolved to the *same* merged road instance before building an
+`INTERSECTION` entry for it - see the `run_by_segment_id` lookup in
+`rasterize()`.
+
+#### Options considered and set aside
+
+A Hermite cubic (or other spline) fit was the option the initial bug report
+suggested, to enforce directionality and smooth continuation through a
+junction. Set aside for now: CSJ centerlines are already straight-segment
+polylines with (as far as verified) exactly coincident vertices at a genuine
+split, so the actual defect was buffering order and cap style, not a need to
+smooth over real geometric kinks between segments. A spline fit would earn
+its complexity only if real data shows *actual* misaligned or kinked
+vertices at a nominal split even after merging - something that needs
+checking against a real CSJ pull, not synthetic test geometry, before it's
+worth building. If that turns out to be the case, the natural place for it
+is inside `_chain_runs`, fitting the merged run's vertices rather than
+concatenating them directly.
+
+### A derived intersection's radius scales with the roads meeting there
+
+Rasterizing every intersection at the same fixed radius
+(`intersection_radius_m`, née a plain constant) visibly pinches a wide
+arterial down to a circle narrower than its own pavement wherever it crosses
+another road - the same underlying "narrower than reality" problem the
+continuity fix above addresses along a road's length, but at a junction.
+`_intersection_radius` floors the *actual* per-intersection radius at half
+the widest intersecting road's rasterized width (using whichever width each
+road actually rasterized at, default-width fallback included, not a
+re-derivation), and only falls back to `intersection_radius_m` when every
+road meeting there is narrower than that. `intersection_radius_m` is
+unchanged in meaning for two narrow streets crossing - it's a floor, not a
+value that stops being read once any road is wider.
+
+**Not yet implemented: shaping a derived intersection from CSJ's own
+`Street Intersections` layer.** San Jose separately publishes point features
+for real intersections (`INTID`, `INTERSECTIONTYPE` e.g. "4 Leg", street
+names on each leg, traffic-control type - see the Open Data example under
+`Street Intersections` cross-referenced in this project's issue history).
+Its `Shape` field's actual geometry type (point vs. polygon footprint) was
+not confirmed at the time `_intersection_radius` was written - this
+project's network access when that code was written could not reach San
+Jose's ArcGIS REST endpoints to check `?f=json`'s `geometryType`, and
+CLAUDE.md's/this project's convention is not to guess at an external
+service's schema. A derived circle sized off the intersecting roads (as
+implemented) is a reasonable interim behavior; using the real layer instead
+- for `INTERSECTIONTYPE`-aware shaping, e.g. a "3 Leg"/T-intersection versus
+a "4 Leg" - needs its REST layer URL confirmed (analogous to how
+`DEFAULT_LAYER_URL`/`DEFAULT_WHERE` were pinned for CSJ Streets, see "The
+CSJ Streets layer and filter" below) before it can be fetched and used the
+same pinned-per-vintage way `--streets-geojson` already is.
 
 ### `rasterize()` is a pure function of geometry, not a live-fetching step
 
@@ -444,6 +549,14 @@ and which imagery file produced it). This is deliberately close to COCO
 panoptic's own "id-encoded raster + segments_info" shape, so a later
 Mask2Former training script can convert to that format without this module
 reimplementing PNG id-packing or RLE encoding itself.
+
+`SegmentInfo.segment_ids` (schema version 2, up from 1) carries every CSJ
+`OBJECTID` rasterized into one `ROAD` instance - more than one where
+contiguous same-street segments were merged (see "Continuous rasterization"
+above), otherwise the same single id `segment_id` already names. A label set
+built under schema version 1 needs rebuilding, not just re-reading, to pick
+this up - `PanopticLabel.load` refuses a mismatched `schema_version` outright
+rather than guessing at a migration.
 
 ## Visualization and QA: two views, plus automated checks
 

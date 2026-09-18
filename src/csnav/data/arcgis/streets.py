@@ -49,6 +49,20 @@ WIDTH_FIELD_CANDIDATES = (
 #: Field names tried for a human-readable street name, same caveat.
 NAME_FIELD_CANDIDATES = ("STREETNAME", "StreetName", "FULLNAME", "FullName", "NAME", "Name", "name")
 
+#: Field names tried for the identifier CSJ uses to group multiple centerline
+#: rows into one logical street ("master" facility) - CSJ splits a physical
+#: street into a separate ``OBJECTID`` at every cross-street, and this is the
+#: field that says which of those rows are really the same street continuing
+#: through. Distinct from a row's own ``OBJECTID``/``FACILITYID``. Used by
+#: `csnav.data.ground_truth.rasterize` to decide which segments may be
+#: buffered as one continuous ribbon instead of leaving a rounded cap at
+#: every CSJ split. Whether this field is actually populated across the live
+#: dataset (as opposed to merely present in the schema) has not been
+#: verified against real data - callers must tolerate ``None`` and never
+#: assume every row carries one; see
+#: `docs/phase2_ground_truth_rasterization.md`.
+MASTER_ID_FIELD_CANDIDATES = ("STREETMASTERID", "StreetMasterId", "streetmasterid")
+
 
 class CSJStreetsError(RuntimeError):
     """Raised when the Streets layer returns an error payload or bad data."""
@@ -114,6 +128,18 @@ def street_width_m(attributes: dict[str, Any]) -> float | None:
 def street_name(attributes: dict[str, Any]) -> str | None:
     """Human-readable street name from the CSJ attributes, or ``None`` if not published."""
     return _first_present(attributes, NAME_FIELD_CANDIDATES)
+
+
+def street_master_id(attributes: dict[str, Any]) -> str | None:
+    """The logical-street ("master") identifier from the CSJ attributes, or ``None`` if not published.
+
+    Returned as a string (CSJ publishes it as an integer) since it is only
+    ever used as an opaque grouping key, never arithmetic.
+    """
+    raw = _first_present(attributes, MASTER_ID_FIELD_CANDIDATES)
+    if raw is None:
+        return None
+    return str(raw)
 
 
 def _as_part(coords: list[list[float]]) -> tuple[tuple[float, float], ...]:

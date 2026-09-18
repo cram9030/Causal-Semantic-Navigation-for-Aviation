@@ -134,7 +134,10 @@ def render_tile_images(
         label_png=label_rel,
         segments=tuple(
             {
-                "objectid": s.segment_id or "",
+                # Joined, not just the primary id, since one instance can be
+                # several contiguous CSJ segments merged into one continuous
+                # ribbon (csnav.data.ground_truth.rasterize).
+                "objectid": ", ".join(s.segment_ids) if s.segment_ids else (s.segment_id or ""),
                 "name": s.name or "",
                 "width_m": round(s.width_m, 1) if s.width_m else None,
                 "default_width": s.default_width_used,

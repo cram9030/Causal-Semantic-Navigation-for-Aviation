@@ -145,7 +145,10 @@ def _label_shape_features(label: PanopticLabel) -> tuple[list[dict[str, Any]], l
                 "geometry": geometry,
                 "properties": {
                     "tile": label.tile.key,
-                    "objectid": segment.segment_id or "",
+                    # Joined, not just the primary id, since one instance can
+                    # be several contiguous CSJ segments merged into one
+                    # continuous ribbon (csnav.data.ground_truth.rasterize).
+                    "objectid": ", ".join(segment.segment_ids) if segment.segment_ids else (segment.segment_id or ""),
                     "name": segment.name or "",
                     "width_m": f"{segment.width_m:.1f}" if segment.width_m else "",
                     "default_width": "yes" if segment.default_width_used else "no",

@@ -7,6 +7,7 @@ from csnav.data.arcgis.streets import (
     CSJStreetsError,
     StreetSegment,
     segment_geometry,
+    street_master_id,
     street_name,
     street_width_m,
 )
@@ -186,6 +187,14 @@ def test_street_width_m_none_when_absent():
 def test_street_name_tries_candidates_in_order():
     assert street_name({"FULLNAME": "Main St"}) == "Main St"
     assert street_name({}) is None
+
+
+def test_street_master_id_reads_the_confirmed_csj_field():
+    assert street_master_id({"STREETMASTERID": 6996}) == "6996"
+
+
+def test_street_master_id_none_when_absent():
+    assert street_master_id({}) is None
 
 
 def test_segment_geometry_linestring_and_multilinestring():

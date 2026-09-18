@@ -40,7 +40,13 @@ from csnav.trajectory.coverage import TileRef
 #: Label schema version, bumped when the on-disk format changes so an older
 #: pinned label set isn't silently misread - same convention as
 #: `csnav.trajectory.manifest.MANIFEST_SCHEMA_VERSION`.
-LABEL_SCHEMA_VERSION = 1
+#:
+#: Bumped 1 -> 2 for `SegmentInfo.segment_ids`: a ``ROAD`` instance can now be
+#: rasterized from more than one CSJ ``OBJECTID`` merged into one continuous
+#: run (`csnav.data.ground_truth.rasterize`'s contiguous-segment merging), so
+#: a single ``segment_id`` string is no longer enough to say which CSJ rows
+#: produced it.
+LABEL_SCHEMA_VERSION = 2
 
 
 class PanopticClass(IntEnum):
@@ -57,10 +63,17 @@ class SegmentInfo:
 
     ``segment_id`` is the source `csnav.data.arcgis.streets.StreetSegment`'s
     id (its CSJ ``OBJECTID``, where the feature published one) for a
-    ``ROAD`` instance; ``intersection_segment_ids`` are the segment ids
-    meeting there for an ``INTERSECTION`` instance (mirrors
+    ``ROAD`` instance - specifically, the lowest ``OBJECTID`` among every CSJ
+    row rasterized into this one instance. ``segment_ids`` carries all of
+    them: a ``ROAD`` instance can be a single CSJ row, or several contiguous
+    rows of the same logical street merged into one continuous buffer so a
+    street that CSJ splits at every cross-street doesn't rasterize with a
+    rounded notch at each split (see `csnav.data.ground_truth.rasterize`).
+    ``intersection_segment_ids`` are the segment ids meeting there for an
+    ``INTERSECTION`` instance (mirrors
     `csnav.trajectory.manifest.ManifestIntersection.segment_ids`). Exactly one
-    of the two is populated, matching ``class_id``.
+    of ``(segment_id, segment_ids)`` / ``intersection_segment_ids`` is
+    populated, matching ``class_id``.
 
     ``attributes`` is the source segment's raw CSJ feature properties (its
     entire ``StreetSegment.attributes`` dict) for a ``ROAD`` instance -
@@ -77,6 +90,7 @@ class SegmentInfo:
     instance_id: int
     class_id: int
     segment_id: str | None = None
+    segment_ids: tuple[str, ...] = ()
     intersection_segment_ids: tuple[str, ...] = ()
     name: str | None = None
     width_m: float | None = None
@@ -88,6 +102,7 @@ class SegmentInfo:
             "instance_id": self.instance_id,
             "class_id": self.class_id,
             "segment_id": self.segment_id,
+            "segment_ids": list(self.segment_ids),
             "intersection_segment_ids": list(self.intersection_segment_ids),
             "name": self.name,
             "width_m": self.width_m,
@@ -101,6 +116,7 @@ class SegmentInfo:
             instance_id=raw["instance_id"],
             class_id=raw["class_id"],
             segment_id=raw.get("segment_id"),
+            segment_ids=tuple(raw.get("segment_ids", ())),
             intersection_segment_ids=tuple(raw.get("intersection_segment_ids", ())),
             name=raw.get("name"),
             width_m=raw.get("width_m"),
