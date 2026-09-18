@@ -178,3 +178,48 @@ def test_resume_skips_tiles_already_on_disk(tmp_path):
     # the only request - the main download loop skips it before ever
     # calling fetch_tile_auto again.
     assert len(_calls_for_level(COVERED_LEVEL)) == 1
+
+
+@responses.activate
+def test_levels_map_pins_this_service_to_its_own_entry(tmp_path):
+    # COVERED_LEVEL (3) is what `level=None` auto-detect would land on
+    # anyway, since it's the only level with real coverage in
+    # METADATA_SMALL_REJECT - pin the map to SMALL_REJECTED_LEVEL (8)
+    # instead, with coverage mocked there too, so tiles written at 8 (not
+    # 3) can only mean the map's value drove target_level, not the
+    # auto-detect fallback.
+    _mock_common(METADATA_SMALL_REJECT)
+    responses.add(
+        responses.GET, re.compile(rf"{re.escape(SERVICE_URL)}/tile/{SMALL_REJECTED_LEVEL}/.*"),
+        body=_png_bytes(), status=200,
+    )
+
+    catalog = ArcGISCatalog(base_url=BASE)
+    written = fhi.fetch_service(
+        _ref(), catalog, AOI, tmp_path, level=None,
+        coverage_sample_size=10, levels_map={"Fake": SMALL_REJECTED_LEVEL},
+    )
+
+    tifs = list(tmp_path.rglob(f"{SMALL_REJECTED_LEVEL}_*.tif"))
+    assert written == len(tifs) > 0
+    assert _calls_for_level(COVERED_LEVEL) == []  # never touched the auto-detect candidate
+
+
+@responses.activate
+def test_levels_map_falls_back_to_auto_detect_when_service_missing(tmp_path):
+    _mock_common(METADATA_HUGE_REJECT)
+    responses.add(responses.GET, re.compile(rf"{re.escape(SERVICE_URL)}/tile/{HUGE_REJECTED_LEVEL}/.*"), status=404)
+    responses.add(
+        responses.GET, re.compile(rf"{re.escape(SERVICE_URL)}/tile/{COVERED_LEVEL}/.*"),
+        body=_png_bytes(), status=200,
+    )
+
+    catalog = ArcGISCatalog(base_url=BASE)
+    written = fhi.fetch_service(
+        _ref(), catalog, AOI, tmp_path, level=None, coverage_sample_size=10,
+        levels_map={"SomeOtherService": 21},  # "Fake" (this service's ref.name) isn't in the map
+    )
+
+    assert written == 1
+    tifs = list(tmp_path.rglob(f"{COVERED_LEVEL}_*.tif"))
+    assert len(tifs) == 1

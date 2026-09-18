@@ -11,6 +11,19 @@
 # bytes, DVC tracks them separately via its own cache/remote, addressed by
 # this file plus the generated dvc.lock.
 stages:
+  # `outs` is `persist: true` deliberately: DVC's default stage behavior is
+  # to delete a stage's declared outputs *before* running its `cmd` (see
+  # `Stage.run` -> `remove_outs`), every time that stage reruns - which
+  # includes every `dvc repro` after an interrupted run, since DVC only
+  # records a stage as done in dvc.lock once its `cmd` exits 0. Without
+  # `persist: true` here, a `dvc repro` after a killed/interrupted 20-hour
+  # imagery pull wipes the whole output directory before
+  # fetch_historic_imagery.py even starts, which defeats that script's own
+  # per-tile resume (skip a tile already on disk - see
+  # docs/phase0_arcgis_tile_client.md's "Resuming a run") by deleting the
+  # very files it would have skipped. `persist: true` tells DVC this
+  # output is managed incrementally by the command itself, not something to
+  # clean before every run.
   fetch_imagery:
     cmd: >-
       python scripts/fetch_historic_imagery.py
@@ -19,6 +32,7 @@ stages:
       --base-url ${imagery.base_url}
       --name-contains ${imagery.name_contains}
       --coverage-sample-size ${imagery.coverage_sample_size}
+      --levels-file params.yaml
     deps:
       - scripts/fetch_historic_imagery.py
       - src/csnav/data/arcgis
@@ -31,8 +45,10 @@ stages:
       - imagery.base_url
       - imagery.name_contains
       - imagery.coverage_sample_size
+      - imagery.levels
     outs:
-      - ${imagery.output_dir}
+      - ${imagery.output_dir}:
+          persist: true
 
   fetch_streets:
     cmd: >-

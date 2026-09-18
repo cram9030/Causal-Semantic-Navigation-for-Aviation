@@ -23,6 +23,11 @@ from xml.etree import ElementTree as ET
 import requests
 
 from .models import Extent, LevelOfDetail, ServiceMetadata, TileInfo
+from .tiles import sample_tiles_covering_extent, tile_count_covering_extent
+
+#: Default tile sample count for :func:`has_any_coverage`/:func:`detect_finest_covered_level`
+#: - matches ``scripts/fetch_historic_imagery.py``'s own default so the two never drift apart.
+DEFAULT_COVERAGE_SAMPLE_SIZE = 25
 
 
 class TileTransport(str, Enum):
@@ -260,3 +265,66 @@ class ArcGISTileClient:
             )
         bounds = tile_bounds(meta.tile_info, level, row, col)
         return self.fetch_export(bounds, width=meta.tile_info.cols, height=meta.tile_info.rows)
+
+
+def has_any_coverage(
+    client: ArcGISTileClient,
+    tile_info: TileInfo,
+    level: int,
+    aoi: Extent,
+    sample_size: int = DEFAULT_COVERAGE_SAMPLE_SIZE,
+) -> bool:
+    """Cheaply check whether *any* tile exists at ``level`` within ``aoi``.
+
+    ``aoi`` must already be in the tile scheme's spatial reference
+    (``tile_info.wkid`` - typically EPSG:3857 for an ArcGIS cache); reproject
+    with :mod:`csnav.data.arcgis.projections` first if it was captured in
+    EPSG:4326. Uses :func:`csnav.data.arcgis.tiles.sample_tiles_covering_extent`,
+    which never materializes the full tile grid for the level being checked -
+    important because a level ultimately rejected can still cover millions
+    (or, for a wide AOI at a fine level, billions) of tiles. A 404 means "not
+    cached here", which is expected and doesn't stop the sample; any other
+    error (network issue, 5xx, ...) is a real problem and propagates.
+    """
+    sample = sample_tiles_covering_extent(tile_info, level, aoi, sample_size)
+    for row, col in sample:
+        try:
+            client.fetch_tile_auto(level, row, col)
+            return True
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                continue
+            raise
+    return False
+
+
+def detect_finest_covered_level(
+    client: ArcGISTileClient,
+    tile_info: TileInfo,
+    aoi: Extent,
+    sample_size: int = DEFAULT_COVERAGE_SAMPLE_SIZE,
+    on_level_rejected=None,
+) -> int | None:
+    """Finest LOD level with real sampled coverage for ``aoi``, or ``None`` if none has any.
+
+    Probes from finest to coarsest and returns the first level
+    :func:`has_any_coverage` finds anything at, since some ArcGIS caches
+    (San Jose's included) only generate tiles for part of an AOI at their
+    finest zoom, or none of it at all. Shared between
+    ``scripts/fetch_historic_imagery.py`` (per-service auto-detection at
+    fetch time) and ``scripts/discover_imagery_levels.py`` (offline, across
+    every historic vintage at once, to pick one level safe to pin for all of
+    them) so the two never disagree about what "the available level" means.
+    ``aoi`` must already be in the tile scheme's spatial reference, as in
+    :func:`has_any_coverage`. ``on_level_rejected(lod)``, if given, is called
+    for each candidate level with no sampled coverage before moving on to a
+    coarser one - useful for progress logging.
+    """
+    for lod in sorted(tile_info.lods, key=lambda lod: lod.level, reverse=True):
+        if tile_count_covering_extent(tile_info, lod.level, aoi) == 0:
+            continue
+        if has_any_coverage(client, tile_info, lod.level, aoi, sample_size):
+            return lod.level
+        if on_level_rejected is not None:
+            on_level_rejected(lod)
+    return None

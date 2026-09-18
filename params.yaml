@@ -22,13 +22,39 @@ imagery:
   base_url: https://geo.sanjoseca.gov/server/rest/services
   name_contains: DPW_Imagery
   coverage_sample_size: 25
-  # `level` is intentionally left unwired into dvc.yaml: the fetch script
-  # auto-detects the finest LOD with real coverage for the AOI (see
-  # scripts/fetch_historic_imagery.py's --level help), and that
-  # auto-detection is itself the behavior worth pinning in most runs. Set
-  # this and add `--level ${imagery.level}` to the fetch_imagery stage's
-  # cmd if a run ever needs to force a specific level.
-  level: null
+  # Per-vintage pinned tile LOD, keyed by service name (matches each
+  # vintage's output subfolder, <output_dir>/<service-name>/) - each
+  # vintage pinned to its OWN highest (finest) level with real sampled
+  # coverage, not one shared value, since coverage genuinely differs by
+  # vintage (e.g. in this AOI, DPW_ImageryCached2011 only reaches level 19
+  # while every other vintage reaches 21 - pinning 21 globally would
+  # silently skip 2011 every run). Pinning per-vintage instead of
+  # re-probing live on every `dvc repro` also keeps output filenames
+  # (`<level>_<row>_<col>.tif`) stable run to run, so
+  # fetch_historic_imagery.py's per-tile resume (skip a tile already on
+  # disk) actually works instead of a different live-detected level making
+  # previously-downloaded tiles invisible to the skip check. See
+  # "Auto-detected level" / "Pinning one level across every vintage" in
+  # docs/phase0_arcgis_tile_client.md. This block is fully machine-owned -
+  # re-run `uv run python scripts/discover_imagery_levels.py --bbox
+  # <aoi.min_lon> <aoi.min_lat> <aoi.max_lon> <aoi.max_lat>` whenever the
+  # AOI changes or the catalog gains a new historic vintage, to refresh it;
+  # it rewrites this whole block in place (don't hand-edit entries here,
+  # they won't survive a refresh).
+  levels:
+    DPW_ImageryCached2001: 21
+    DPW_ImageryCached2006: 21
+    DPW_ImageryCached2011: 19
+    DPW_ImageryCached2016: 21
+    DPW_ImageryCached2017: 21
+    DPW_ImageryCached2018: 21
+    DPW_ImageryCached2019: 21
+    DPW_ImageryCached2020: 21
+    DPW_ImageryCached2021: 21
+    DPW_ImageryCached2022: 21
+    DPW_ImageryCached2023: 21
+    DPW_ImageryCached2024: 21
+    DPW_ImageryCached2025: 21
 
 streets:
   output: data/raw/csj_streets/aoi.geojson

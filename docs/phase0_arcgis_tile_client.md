@@ -107,7 +107,9 @@ one GeoTIFF per tile under `data/raw/dpw_imagery/<service-name>/`.
 | `--output-dir PATH` | yes | - | Directory to write GeoTIFFs into; one subfolder per discovered service, created if missing. |
 | `--base-url URL` | no | `https://geo.sanjoseca.gov/server/rest/services` | Root of the ArcGIS REST services directory to search. |
 | `--name-contains TEXT` | no | `DPW_Imagery` | Substring used to match service names under `Imagery` - matches every historic vintage whose name contains it (e.g. also matches `DPW_ImageryCached2025`), not just one exact name. |
-| `--level N` | no | auto-detected (see below) | Tile LOD level to fetch, per that service's own `tileInfo`. |
+| `--level N` | no | auto-detected (see below) | Tile LOD level to fetch, per that service's own `tileInfo`. Used as the fallback for any service not found in `--levels-file` (or for all services, if `--levels-file` isn't given). |
+| `--levels-file PATH` | no | none | YAML file (e.g. `params.yaml`) holding a `{service-name: level}` map (see `--levels-key`) - pins each historic vintage to its own level instead of one shared `--level`. See "Pinning each vintage to its own level" below. |
+| `--levels-key KEY` | no | `imagery.levels` | Dotted path to the `{service-name: level}` map within `--levels-file`. |
 | `--overwrite` | no | off | Re-fetch a tile even if its output GeoTIFF already exists. Without it, a tile already on disk is skipped - see "Resuming a run" below. |
 | `--coverage-sample-size N` | no | 25 | Tiles to sample when checking a level actually has cached coverage for the AOI before committing to a full run - see "Auto-detected level" below. |
 | `--skip-coverage-check` | no | off | Skip that sample check entirely. With `--level`, fetches it unconditionally; without `--level`, falls back to the naive finest-level default, unchecked. |
@@ -152,6 +154,69 @@ tiles written vs. not cached vs. failed either way.
 Progress is shown live via a `tqdm` bar (services overall, plus a per-service
 tile bar with running written/missing/failed counts) - useful since a large
 AOI at a fine `--level` can mean fetching thousands of tiles.
+
+### Pinning each vintage to its own level (`scripts/discover_imagery_levels.py`)
+
+The DVC pipeline (`dvc.yaml`'s `fetch_imagery` stage) does **not** rely on
+`--level`'s auto-detection at run time - it pins a `{service-name: level}`
+map, `imagery.levels` in `params.yaml`, and passes
+`--levels-file params.yaml` explicitly (`--levels-key` selects the dotted
+key within that file, default `imagery.levels`; a service missing from the
+map falls back to `--level`/auto-detection for that run rather than being
+skipped). Two reasons this is pinned per vintage rather than left to
+auto-detect, or pinned to one shared value:
+
+- Auto-detection re-probes the live server on every run. Output filenames
+  are `<level>_<row>_<col>.tif`, so if a rerun's live probe happens to land
+  on a different level than an earlier run did, every already-downloaded
+  tile becomes invisible to the "Resuming a run" skip check above under the
+  new level's filename prefix - what looks like (and, over the network,
+  actually is) a full re-download of data already on disk.
+- Coverage genuinely differs by vintage, so no single shared level is
+  right for all of them. In this project's AOI, every vintage has coverage
+  at level 21 *except* `DPW_ImageryCached2011`, which only reaches 19.
+  Pinning 21 globally would silently skip 2011 every time (`--level`'s
+  coverage check rejects that one service and moves on, rather than
+  failing the whole run - see the flag table above - so the omission is
+  easy to miss); pinning 19 globally would fetch every other vintage at a
+  needlessly coarse resolution just to accommodate the one outlier. Each
+  vintage should get its own ceiling.
+
+`scripts/discover_imagery_levels.py` probes every currently-discovered
+vintage the same way `--level`'s auto-detection would (same underlying
+`detect_finest_covered_level` in `csnav.data.arcgis.client`, so the two
+never disagree) and pins each one's own finest-covered level - keyed by the
+short service name that matches each vintage's output subfolder - into
+`params.yaml`:
+
+```bash
+uv run python scripts/discover_imagery_levels.py \
+    --bbox -121.95 37.30 -121.85 37.36
+```
+
+Re-run it (manually, not via `dvc repro` - writing to `params.yaml` from a
+stage that reads `params.yaml` would be circular) whenever the AOI changes
+or the catalog gains a new historic vintage, then run
+`dvc repro fetch_imagery` as usual. Pass `--dry-run` to preview the table
+without writing anything. The `imagery.levels` block in `params.yaml` is
+fully machine-owned - a refresh replaces every entry (dropping a vintage no
+longer in the catalog) rather than merging, so don't hand-edit entries
+there. A vintage with *no* coverage at any level is left out of the map and
+reported as a separate warning - no level pins that; it means that service
+has nothing to fetch for this AOI regardless.
+
+### Why an interrupted `dvc repro` doesn't lose downloaded tiles
+
+`fetch_imagery`'s output in `dvc.yaml` is declared `persist: true`. Without
+it, DVC's default stage behavior deletes a stage's declared outputs
+*before* running its `cmd` on every rerun (`Stage.run` -> `remove_outs`) -
+and a `dvc repro` after any interrupted run is a rerun, since DVC only
+records a stage as done in `dvc.lock` once its `cmd` exits `0`. For a
+resumable, many-hour download like this one, that default would delete the
+whole output directory - including everything already downloaded - right
+before the script even starts, which defeats "Resuming a run" above
+entirely. `persist: true` tells DVC this output is managed incrementally by
+the command itself, not something to clean before every run.
 
 ## Running the tests
 
